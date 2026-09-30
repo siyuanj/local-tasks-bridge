@@ -92,8 +92,8 @@ subtasks, exact-time reminders, all-empty-list behavior, or a persistent agent.
 
 1. Desktop rendering is verified by the user screenshot (audit/widget-visible-user.png).
 2. Desktop checkbox completion is verified by Google API and the native completed list.
-3. My Tasks initial import is verified below. Its desktop widget selection and
-   persistent runtime remain pending; Python currently belongs to the Codex runtime.
+3. My Tasks initial import is verified below. The user confirmed its desktop widget selection;
+   the persistent runtime remains pending; Python currently belongs to the Codex runtime.
 4. Address Google External/Testing's seven-day refresh-token expiry before
    describing this as a low-maintenance daily installation.
 
@@ -145,7 +145,7 @@ After the initial state was established, completion propagation was enabled
 with the prior one-destructive-change limit, conflict skipping, and empty-source
 deletion protection. The resulting dry-run is empty. The upstream setting also
 enables missing-item deletion within these limits; general deletion has not
-been live-tested. No persistent agent is installed. The user has been asked to
-switch the desktop widget to My Tasks; its everyday rendering remains pending.
+been live-tested. No persistent agent is installed. The user confirmed switching the desktop widget to My Tasks. This last UI
+selection is user-reported; native UI automation did not independently verify it.
 Private evidence: daily-first-live.log, daily-converged.log,
 daily-google-before-latest.json, daily-google-after.json, daily-apple-after.json.

@@ -1,5 +1,19 @@
 # Local trial status
 
+## 2026-09-30 23:17 CST (Asia/Shanghai) - 自动后台启动与原生权限宿主
+
+- 用户请求/决定：询问自动同步如何启动，沿用本任务既有安装/同步授权；用户已手动允许 Local Tasks Bridge 的提醒事项权限。10 条已在 Mac 完成的测试任务是否批量回写 Google 的具体确认仍待答。
+- 本次修改：新增 scripts/install-local-background.py、LocalBridgeLauncher.swift、scripts/package-local-launcher.py 及 docs/09-30 background-local.md，README 指向后台文档。安装器复制固定哈希的同步代码到 releases/<commit>，current 指向该版本，轻量 Python 3.12/stdlib 为 58M，排除第三方 site-packages；不再依赖 Codex 缓存或工作目录。既有 daily-config/state/token 留在私有目录，配置改路径前已备份。
+- 部署来源：同步引擎/Swift helpers 为 clean commit bb14a8f6744fcd8200cae26810cbd5a8cc6b70a0（引擎仍含 6629846 的已验收修复），原生宿主源码为 2d4faea1c0b4f99aaed742eb4a79bc3796e78e6f。使用原有 source gate 明确支持的 non-main/unpushed override，记录个人已审查补丁/不向上游发布的理由；未允许 dirty 或替换 origin，未 push。
+- 自审与修复：核查部署清单/路径/私有模式/哈希、无新增 Google scope、原生宿主进程退出/信号/子进程参数。首次 Python 复制因 pkgconfig 的缺失开发符号链接失败，配置与 LaunchAgent 尚未写入；保留不完整目录，修复忽略 pkgconfig 后成功。首次 GitHub 查询未走系统代理而卡住，结束该查询；后续沿用已存在的本地代理进行只读核验成功。
+- 实际系统障碍：直接 Python LaunchAgent 的 Swift EventKit 访问被拒，系统设置仅 ChatGPT 可读 Reminders。已停止该进程，再以实测 116K 原生 App 为权限宿主。使用现有 CLT 编译、ad-hoc 签名和严格签名检查，无完整 Xcode 下载。工具禁止操作 UserNotificationCenter，用户自行允许；随后系统设置 AX 确认 Local Tasks Bridge 与 python3.12 都为 on，ChatGPT 仍 on。
+- 本次验证：语法/Swift 类型检查、运行代码 SHA-256、plist lint、原生 App codesign --verify --strict、日志目录 0700/文件 0600。launchd 已加载并 running；真实定时轮次 23:12:28→23:12:41、23:13:41→23:13:52 正常完成（当前有批量完成暂缓，其他同步正常）；停止后旧 PID 50389/50397 均退出，重新启动 PID 50481，23:14:56→23:15:08 再完成一轮。每轮实际读取 2 条活动 My Tasks 并通过 2 条 title/due Google 核验，completed/deleted 均为 0。
+- 当前真实状态：LaunchAgent com.icloud-reminders-google-sync 的 ProgramArguments 为 ~/Applications/Local Tasks Bridge.app/Contents/MacOS/LocalBridgeLauncher；RunAtLoad/KeepAlive 开启，轮次完成后等待 60 秒。状态 awaiting_mutation_approval，原因明确为 Google Tasks complete=10 超过单次限额 1；这 10 条未被自动完成/删除。没有改动同步引擎，此前 95 项离线测试未重复跑。
+- 证据：audit/background-install.log（首次失败）、background-install-retry.log、background-native-package.log；私有 background-preflight.log、launcher-provenance.json、原配置/agent 备份；后台日志 ~/Library/Logs/icloud-reminders-google-sync/ 与私有 daily-status.json。启动/停止及回滚见 docs/09-30 background-local.md。
+- 未验证/下一步：整机重启/注销后自启动尚未实际执行；睡眠恢复与断网长测未做；Google External/Testing 约 7 天授权限制仍未处理；通用删除未验收。批量完成需要用户对具体 10 条的答复，不能代批准。待答后核验精确计划并执行，再确认 Google 与 Mac 状态一致。
+- 要用户定的：已发出“测试任务 1～10 回写完成”具体确认，未获得答复；原生 App 权限问题已由用户解决。
+
+
 ## 2026-09-30 22:54 CST (Asia/Shanghai) - 用户确认日常组件已切换
 
 - 用户反馈：已将桌面组件清单切换为 My Tasks；此项依据用户确认，未再次使用不可靠的桌面编辑器自动化验证。

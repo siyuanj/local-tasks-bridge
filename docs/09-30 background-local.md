@@ -20,8 +20,15 @@ automatic destructive approval remain. More than one completion/deletion in a
 cycle may be held; the private status records that condition. General deletion
 has not been live-tested. OAuth Testing's seven-day expiry is still a limitation.
 
-The LaunchAgent runs `run-loop` once per 60-second sleep after each synchronization
-pass. It starts at login and restarts after unexpected process exit. It runs in
+The LaunchAgent runs the named `~/Applications/Local Tasks Bridge.app` permission
+host, which requests its own Reminders grant and launches the reviewed Python
+`run-loop`. Direct launchd Python could not inherit Codex's privacy access.
+`scripts/package-local-launcher.py` builds the host using the existing CLT,
+ad-hoc signs it, verifies the signature, and records source/binary hashes outside
+the bundle. The user allowed the system prompt.
+
+The loop uses a 60-second sleep after each synchronization pass. It starts at
+login and restarts after unexpected process exit. It runs in
 the signed-in user's session. A sleeping or offline Mac cannot synchronize; the
 loop resumes after waking/network recovery. No logout/reboot test is implied by
 loading the agent and observing scheduled cycles.
@@ -52,5 +59,10 @@ they contain task titles. The runtime installer backs up the prior config before
 changing helper paths. Rollback: unload the LaunchAgent, restore that config
 backup, and use the previously verified manual workflow.
 
-Actual background results will be recorded in STATUS after launchd and Google
-API/EventKit checks; a successful installation alone is not synchronization proof.
+Actual acceptance: two scheduled cycles completed, read the two active My Tasks
+reminders and verified their Google title/due consistency. Stop/restart terminated
+the old launcher/Python children, and a subsequent new cycle completed.
+Ten previously completed Mac test tasks remain held for explicit bulk approval;
+other synchronization proceeds. There is no reboot/login or long-duration test.
+See STATUS for timestamps, process IDs, incomplete installation attempts, and
+remaining OAuth limitations.

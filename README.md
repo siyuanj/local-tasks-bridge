@@ -2,7 +2,7 @@
 
 ## Local trial (2026-09-30)
 
-This checkout is a private, manual trial based on upstream commit
+This checkout is a private local fork based on upstream commit
 `3501800b672ef58c823eb0711c22412c2db98dce`; it is not an upstream release.
 Do not run the default installer for this trial. The reviewed private background
 installation is documented in [docs/09-30 background-local.md](docs/09-30%20background-local.md).

@@ -5,8 +5,9 @@
 The user explicitly approved the Google User Data Policy, creation of the local
 desktop OAuth client, and Google Tasks read/write access. They requested a free,
 Google-preserving Mac desktop workflow and protection from sending data to the
-repository author. This is a manually run, private fork trial, not an upstream
-production deployment. No installer, LaunchAgent, or billing enrollment ran.
+repository author. The initial acceptance used a manually run private fork, not an upstream
+production deployment. The initial trial used no installer or LaunchAgent. A native-hosted background
+agent was added later at the user's request; billing enrollment never ran.
 
 The user's independent Google Cloud project is `reminders-tasks-local-bridge`.
 The Google Tasks API is enabled and only their own account is a test user.
@@ -93,7 +94,7 @@ subtasks, exact-time reminders, all-empty-list behavior, or a persistent agent.
 1. Desktop rendering is verified by the user screenshot (audit/widget-visible-user.png).
 2. Desktop checkbox completion is verified by Google API and the native completed list.
 3. My Tasks initial import is verified below. The user confirmed its desktop widget selection;
-   the persistent runtime remains pending; Python currently belongs to the Codex runtime.
+   the persistent runtime is now documented in the background record; Python is now copied into a standalone private runtime.
 4. Address Google External/Testing's seven-day refresh-token expiry before
    describing this as a low-maintenance daily installation.
 
@@ -145,7 +146,7 @@ After the initial state was established, completion propagation was enabled
 with the prior one-destructive-change limit, conflict skipping, and empty-source
 deletion protection. The resulting dry-run is empty. The upstream setting also
 enables missing-item deletion within these limits; general deletion has not
-been live-tested. No persistent agent is installed. The user confirmed switching the desktop widget to My Tasks. This last UI
+been live-tested. A native-hosted persistent agent is installed; see docs/09-30 background-local.md. The user confirmed switching the desktop widget to My Tasks. This last UI
 selection is user-reported; native UI automation did not independently verify it.
 Private evidence: daily-first-live.log, daily-converged.log,
 daily-google-before-latest.json, daily-google-after.json, daily-apple-after.json.

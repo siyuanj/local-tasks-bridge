@@ -4,7 +4,8 @@
 
 This checkout is a private, manual trial based on upstream commit
 `3501800b672ef58c823eb0711c22412c2db98dce`; it is not an upstream release.
-Do not run the default installer for this trial. No LaunchAgent is installed.
+Do not run the default installer for this trial. The reviewed private background
+installation is documented in [docs/09-30 background-local.md](docs/09-30%20background-local.md).
 The local patch requests only the selected Google service plus identity scopes,
 supports `manual_oauth_browser: true`, and passes `include_lists` to both Swift
 helpers so reads and writes share the same list boundary. Store trial config

@@ -1,5 +1,15 @@
 # Local trial status
 
+## 2026-09-30 23:32 CST (Asia/Shanghai) - 长期 OAuth 配置准备及锁屏阻塞
+
+- 用户要求：配置长期 Google 授权；沿用本人项目与现有 Tasks + 身份权限，不改变同步范围或破坏性限额。
+- 本次操作：Google 控制台 Audience 实测 External / Testing；Publish app 禁用，提示先完成 Branding。将品牌名从 My Local Tasks Bridge 保存为 Local Tasks Bridge，页面显示 Branding changes saved；回到 Audience 后仍不能 Publish。支持/开发者邮箱已配置，应用首页/隐私政策/条款/授权域名为空；具体缺失门槛仍需进一步核查。
+- 已准备：docs/09-30 long-term-oauth.md 记录官方要求、Production 下重新授权、私有 token 备份、刷新/API/后台验收流程。只读 GitHub API 确认本人 siyuanj.github.io 仓库和 Pages 已存在；未修改或发布网站。同步代码未变，无需重复此前通过的离线测试。
+- 当前实测：launchctl print 显示服务 running、PID 50481；daily-status.json 最新 last_success_at=2026-09-30T15:30:45+00:00（23:30:45 CST）。仍保留 10 条批量完成的独立待确认事项，不将本次长期授权请求作为其批准。
+- 阻塞：电脑接口返回 Mac 已锁屏且不能自动解锁，已请求用户手动解锁。未切换 Production，未停止服务、替换 token、扩展权限或发布公共页面。
+- 未验证/下一步：解锁后核实具体 Branding 门槛；必要时准备本人站点说明页。最终延长授权有效期时，按电脑接口要求取得具体确认，再执行 Production 切换及新授权并核验实际后台轮次。长期有效期尚未验收，不能报告长期授权已完成。
+- 要用户定的：手动解锁 Mac；最终扩展授权时的具体确认尚未到可执行步骤。
+
 ## 2026-09-30 23:17 CST (Asia/Shanghai) - 自动后台启动与原生权限宿主
 
 - 用户请求/决定：询问自动同步如何启动，沿用本任务既有安装/同步授权；用户已手动允许 Local Tasks Bridge 的提醒事项权限。10 条已在 Mac 完成的测试任务是否批量回写 Google 的具体确认仍待答。

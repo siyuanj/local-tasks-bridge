@@ -30,7 +30,8 @@ selected for synchronization.
 | Mac completes A, Google receives completion | API verified |
 | Google completes B, Mac receives completion | Initially exposed a deletion bug; repaired and rerun |
 | Repeat sync after convergence | Zero mutations, one active item unchanged |
-| Desktop widget rendering and checkbox | Not yet verified; native window automation failed |
+| Desktop widget rendering | User screenshot verifies the correct list and active C |
+| Desktop widget checkbox completion | Pending user click and live API verification |
 
 Current disposable test state: A and B completed on both sides; C remains active
 for the desktop-widget checkbox test. The original Google B was accidentally
@@ -88,8 +89,8 @@ subtasks, exact-time reminders, all-empty-list behavior, or a persistent agent.
 
 ## Remaining work
 
-1. Open the Mac widget editor and add Reminders, selecting the test list.
-2. Verify C visibly renders and a desktop checkbox completion reaches Google.
+1. Desktop rendering is verified by the user screenshot (audit/widget-visible-user.png).
+2. Verify a desktop checkbox completion reaches Google after the user clicks C.
 3. Only then configure the everyday list and an explicitly documented persistent
    runtime; the current Python path belongs to the existing Codex runtime.
 4. Address Google External/Testing's seven-day refresh-token expiry before
@@ -117,8 +118,10 @@ The user opened the widget gallery, and automation could select the native Mac
 Reminders category. Adding the medium preview and pressing Done did not yield a
 verifiable Reminders desktop window: subsequent native AX/screenshot observations
 selected the existing Photos widget. The user has been asked to manually add the
-Reminders widget and select `Bridge Test 2026-09-30`; no successful widget
-placement or checkbox interaction is claimed yet.
+Reminders widget and select `Bridge Test 2026-09-30`. The user subsequently
+provided a screenshot showing the correct list and one active C on the desktop.
+This verifies placement and rendering. Checkbox interaction remains pending;
+a fresh Google API read at 22:48 CST still shows C needsAction and A/B completed.
 
 The reviewed network paths use official Google endpoints and local EventKit.
 This source review and bounded trial are evidence of observed behavior, not a

@@ -12,6 +12,61 @@ import icloud_reminders_google_sync as sync
 
 
 class LocalSafetyTests(unittest.TestCase):
+    def test_inbound_completion_is_not_deleted_using_stale_completed_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = sync.default_config()
+            config.update(
+                state_path=str(Path(directory) / "state.json"),
+                bidirectional=True, delete_stale=True, tasks_complete_stale=True,
+                max_destructive_ratio=1.0, verify_title_due_after_sync=False,
+            )
+            reminder = {
+                "stable_id": "synthetic-reminder", "title": "Completion regression",
+                "notes": "", "list_title": "Trial", "list_id": "apple-list",
+                "account_id": "synthetic-account", "due_date": "2026-09-30",
+                "due_at": None, "all_day": True, "is_completed": False,
+                "modified_at": "2026-09-30T00:00:00Z", "completed_at": None,
+            }
+            uid, body, digest = sync.build_task(reminder, config)
+            active_task = {**body, "id": "synthetic-task", "status": "needsAction"}
+            completed_task = {**active_task, "status": "completed"}
+            finished = {**reminder, "is_completed": True,
+                        "completed_at": "2026-09-30T01:00:00Z",
+                        "modified_at": "2026-09-30T01:00:00Z"}
+            _, finished_body, finished_digest = sync.build_task(finished, config)
+            state = {"version": 1, "events": {}, "tasks": {}}
+            binding = {"version": 1, "apple": "synthetic-apple", "google": "synthetic-google"}
+            sync.bind_or_validate_sync_state_accounts(state, binding)
+            sync.save_task_state(state, "google-list", uid, active_task, digest,
+                                 reminder["title"], reminder, config, "Trial")
+            client = mock.Mock()
+            with contextlib.ExitStack() as stack:
+                def patch(name, **kwargs):
+                    return stack.enter_context(mock.patch.object(sync, name, **kwargs))
+                patch("build_desired_tasks", side_effect=[
+                    ([reminder], {"Trial": {uid: (body, digest, reminder)}}, 0),
+                    ([], {"Trial": {}}, 0),
+                ])
+                patch("build_completed_tasks", side_effect=[
+                    ([], {}, 0),
+                    ([finished], {"Trial": {uid: (finished_body, finished_digest, finished)}}, 0),
+                ])
+                patch("load_state", return_value=state)
+                patch("resolve_sync_account_binding", return_value=binding)
+                patch("GoogleTasksClient", return_value=client)
+                patch("inspect_tasklists_for_desired", return_value=({"Trial": "google-list"}, []))
+                patch("list_task_snapshot", return_value=([completed_task], []))
+                patch("apply_google_task_changes_to_reminders", return_value=(1, 0, 0, set()))
+                stack.enter_context(mock.patch.object(sync.time, "sleep"))
+                stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+                sync.run_tasks_sync(config)
+            client.delete_task.assert_not_called()
+            client.patch_task.assert_not_called()
+            saved = json.loads(Path(config["state_path"]).read_text())
+            record = sync.task_state_record(saved, "google-list", uid)
+            self.assertEqual(record["task_id"], "synthetic-task")
+            self.assertTrue(record["apple_completed"])
+
     def test_tasks_oauth_has_no_calendar_or_cloud_scope_and_no_browser_launch(self):
         with tempfile.TemporaryDirectory() as directory:
             config = sync.default_config()

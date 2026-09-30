@@ -11,6 +11,10 @@ helpers so reads and writes share the same list boundary. Store trial config
 and credentials outside this repository. Run `test_local_safety.py` with the
 upstream tests before live trials. OAuth and macOS permissions remain necessary;
 the list restriction is application logic, not a narrower OS permission grant.
+The local trial also refreshes completed reminders after applying inbound Google
+changes. Without that refresh, a newly completed reminder could be mistaken for
+a deletion in the same synchronization pass. See the isolated live acceptance
+record in [docs/09-30 local-acceptance.md](docs/09-30%20local-acceptance.md).
 
 Apple Reminders와 Google Tasks를 로컬 Mac에서 양방향 동기화하는 도구다.
 Google은 iCloud Reminders를 직접 읽고 쓸 수 없으므로, 로그인된 Mac의

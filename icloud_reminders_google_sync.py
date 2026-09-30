@@ -4560,6 +4560,11 @@ def run_tasks_sync(config: dict[str, Any], dry_run: bool = False) -> None:
     if google_applied and not dry_run:
         time.sleep(1)
         reminders, desired_by_list, skipped_invalid = build_desired_tasks(config)
+        # Inbound completions move reminders out of the active snapshot. Refresh
+        # the completed snapshot too, or stale cleanup can misread them as deleted.
+        if allow_deletes and config["tasks_complete_stale"]:
+            _completed_reminders, completed_by_list, completed_skipped = build_completed_tasks(config)
+            skipped_invalid += completed_skipped
         print(f"Apple Reminders re-exported after Google Tasks changes: {len(reminders)}")
         print(f"Google Tasks desired: {sum(len(items) for items in desired_by_list.values())}")
         tasks_by_list = {}

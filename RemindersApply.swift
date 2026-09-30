@@ -159,6 +159,19 @@ func result(for reminder: EKReminder, status: String, stableID requestedStableID
     ]
 }
 
+// Apply the same list boundary as the exporter before fetching any reminders.
+var allowedListNames = Set<String>()
+let arguments = Array(CommandLine.arguments.dropFirst())
+var argumentIndex = 0
+while argumentIndex < arguments.count {
+    guard arguments[argumentIndex] == "--list", argumentIndex + 1 < arguments.count,
+          !arguments[argumentIndex + 1].isEmpty else {
+        fail("Expected --list NAME.")
+    }
+    allowedListNames.insert(arguments[argumentIndex + 1])
+    argumentIndex += 2
+}
+
 let inputData = FileHandle.standardInput.readDataToEndOfFile()
 guard !inputData.isEmpty else {
     fail("Expected JSON operations on stdin.")
@@ -180,7 +193,12 @@ guard requestReminderAccess(store) else {
     fail("Reminders access was denied. Enable it in System Settings > Privacy & Security > Reminders.")
 }
 
-let calendars = store.calendars(for: .reminder)
+let calendars = store.calendars(for: .reminder).filter {
+    allowedListNames.isEmpty || allowedListNames.contains($0.title)
+}
+if !allowedListNames.isEmpty && calendars.isEmpty {
+    fail("No allowed Reminders list was found; refusing to write.")
+}
 var calendarsByIdentifier: [String: EKCalendar] = [:]
 var calendarsByTitle: [String: [EKCalendar]] = [:]
 for calendar in calendars {

@@ -1,5 +1,17 @@
 # iCloud Reminders ↔ Google Tasks 동기화
 
+## Local trial (2026-09-30)
+
+This checkout is a private, manual trial based on upstream commit
+`3501800b672ef58c823eb0711c22412c2db98dce`; it is not an upstream release.
+Do not run the default installer for this trial. No LaunchAgent is installed.
+The local patch requests only the selected Google service plus identity scopes,
+supports `manual_oauth_browser: true`, and passes `include_lists` to both Swift
+helpers so reads and writes share the same list boundary. Store trial config
+and credentials outside this repository. Run `test_local_safety.py` with the
+upstream tests before live trials. OAuth and macOS permissions remain necessary;
+the list restriction is application logic, not a narrower OS permission grant.
+
 Apple Reminders와 Google Tasks를 로컬 Mac에서 양방향 동기화하는 도구다.
 Google은 iCloud Reminders를 직접 읽고 쓸 수 없으므로, 로그인된 Mac의
 EventKit과 사용자 LaunchAgent가 연결 지점이 된다.

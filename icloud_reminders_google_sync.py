@@ -938,7 +938,10 @@ def run_auth_flow(config: dict[str, Any]) -> None:
         "client_id": credentials["client_id"],
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": LOCAL_OAUTH_SCOPES,
+        "scope": " ".join([
+            TASKS_SCOPE if config.get("target_service", "tasks") == "tasks" else CALENDAR_SCOPE,
+            "openid", "email",
+        ]),
         "access_type": "offline",
         "prompt": "consent",
         "state": state,
@@ -947,8 +950,8 @@ def run_auth_flow(config: dict[str, Any]) -> None:
     }
     auth_url = f"{OAUTH_AUTH_URL}?{urllib.parse.urlencode(query)}"
 
-    print("Opening Google OAuth consent in your browser.")
-    if not open_auth_url(auth_url):
+    print("Authorize directly with Google using your own OAuth client.")
+    if config.get("manual_oauth_browser") or not open_auth_url(auth_url):
         print("Open this URL manually:")
         print(auth_url)
 
@@ -2396,8 +2399,11 @@ def run_reminders_apply(config: dict[str, Any], operations: list[dict[str, Any]]
     if not shutil.which("swift"):
         raise SystemExit("Swift is not installed or not on PATH. Google-to-Apple sync requires Swift/EventKit.")
 
+    command = ["swift", str(apply_path)]
+    for list_name in config.get("include_lists", []):
+        command.extend(["--list", list_name])
     process = subprocess.run(
-        ["swift", str(apply_path)],
+        command,
         input=json.dumps(operations, ensure_ascii=False),
         capture_output=True,
         text=True,

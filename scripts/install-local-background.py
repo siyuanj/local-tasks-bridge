@@ -60,8 +60,8 @@ def main():
         "commit": args.expected_commit, "reason": args.reason,
         "files": hashes, "mode": "private-reviewed-fork",
     }, indent=2) + "\n")
-    shutil.copytree(args.python_runtime, python_root,
-                    ignore=shutil.ignore_patterns("site-packages", "__pycache__", "include", "share"))
+    shutil.copytree(args.python_runtime, python_root, symlinks=True,
+                    ignore=shutil.ignore_patterns("site-packages", "__pycache__", "include", "share", "pkgconfig"))
     python = python_root / "bin/python3.12"
     subprocess.run([str(python), "-B", "-c", "import ssl,sqlite3,urllib.request; print('Private Python runtime ready')"],
                    check=True)

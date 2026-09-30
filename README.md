@@ -15,6 +15,9 @@ The local trial also refreshes completed reminders after applying inbound Google
 changes. Without that refresh, a newly completed reminder could be mistaken for
 a deletion in the same synchronization pass. See the isolated live acceptance
 record in [docs/09-30 local-acceptance.md](docs/09-30%20local-acceptance.md).
+Confirmed completed reminders can propagate when the active list becomes empty;
+the empty-source guard still blocks missing-item and duplicate deletions.
+The explicit `--no-delete-stale` override still suppresses completion propagation.
 
 Apple Reminders와 Google Tasks를 로컬 Mac에서 양방향 동기화하는 도구다.
 Google은 iCloud Reminders를 직접 읽고 쓸 수 없으므로, 로그인된 Mac의

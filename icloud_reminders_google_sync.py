@@ -4163,7 +4163,10 @@ def plan_google_task_outbound_mutations(
     completed_by_list: dict[str, dict[str, tuple[dict[str, Any], str, dict[str, Any]]]],
     *,
     allow_deletes: bool,
+    allow_completions: bool | None = None,
 ) -> list[dict[str, Any]]:
+    if allow_completions is None:
+        allow_completions = allow_deletes
     actions: list[dict[str, Any]] = []
     desired_keys: set[tuple[str, str]] = set()
     claimed_task_ids: set[tuple[str, str]] = set()
@@ -4228,7 +4231,7 @@ def plan_google_task_outbound_mutations(
             elif not task_id:
                 actions.append(planned_mutation("google_tasks", "create", [list_title, tasklist_id, uid]))
 
-    if allow_deletes:
+    if allow_deletes or allow_completions:
         stale: dict[tuple[str, str], dict[str, Any]] = {}
         for key, record in list(state.setdefault("tasks", {}).items()):
             if not isinstance(record, dict):
@@ -4242,7 +4245,7 @@ def plan_google_task_outbound_mutations(
             if not list_allows_delete_propagation(
                 config,
                 list_title,
-                safety_allows_deletes=allow_deletes,
+                safety_allows_deletes=allow_deletes or allow_completions,
             ):
                 continue
             if (tasklist_id, task_id) in claimed_task_ids:
@@ -4263,7 +4266,7 @@ def plan_google_task_outbound_mutations(
             if not list_allows_delete_propagation(
                 config,
                 list_title,
-                safety_allows_deletes=allow_deletes,
+                safety_allows_deletes=allow_deletes or allow_completions,
             ):
                 continue
             for uid, task in existing_by_list.get(list_title, {}).items():
@@ -4289,7 +4292,7 @@ def plan_google_task_outbound_mutations(
             record = candidate.get("record") if isinstance(candidate.get("record"), dict) else None
             review_title = str((task or {}).get("title") or (record or {}).get("title") or "")
             completed_item = completed_by_list.get(list_title, {}).get(uid)
-            if config["tasks_complete_stale"] and completed_item:
+            if allow_completions and config["tasks_complete_stale"] and completed_item:
                 _body, digest, _reminder = completed_item
                 already_recorded = bool(
                     record
@@ -4310,6 +4313,8 @@ def plan_google_task_outbound_mutations(
                             title=review_title,
                         )
                     )
+                continue
+            if not allow_deletes:
                 continue
             actions.append(
                 planned_mutation(
@@ -4496,8 +4501,11 @@ def run_tasks_sync(config: dict[str, Any], dry_run: bool = False) -> None:
     )
     skip_stale = bool(delete_requested and not config["allow_empty_source_delete"] and source_count == 0)
     allow_deletes = bool(delete_requested and not skip_stale)
+    # An explicit completed reminder is positive evidence even when no active
+    # reminders remain. Missing items and duplicates still need deletion safety.
+    allow_completions = bool(delete_requested and config["tasks_complete_stale"])
     completed_by_list: dict[str, dict[str, tuple[dict[str, Any], str, dict[str, Any]]]] = {}
-    if allow_deletes and config["tasks_complete_stale"]:
+    if allow_completions:
         _completed_reminders, completed_by_list, completed_skipped = build_completed_tasks(config)
         skipped_invalid += completed_skipped
 
@@ -4531,6 +4539,7 @@ def run_tasks_sync(config: dict[str, Any], dry_run: bool = False) -> None:
             preflight_blocked,
             completed_by_list,
             allow_deletes=allow_deletes,
+            allow_completions=allow_completions,
         )
     )
     population = max(source_count, managed_google_task_population(tasklists, tasks_by_list, state))
@@ -4562,7 +4571,7 @@ def run_tasks_sync(config: dict[str, Any], dry_run: bool = False) -> None:
         reminders, desired_by_list, skipped_invalid = build_desired_tasks(config)
         # Inbound completions move reminders out of the active snapshot. Refresh
         # the completed snapshot too, or stale cleanup can misread them as deleted.
-        if allow_deletes and config["tasks_complete_stale"]:
+        if allow_completions:
             _completed_reminders, completed_by_list, completed_skipped = build_completed_tasks(config)
             skipped_invalid += completed_skipped
         print(f"Apple Reminders re-exported after Google Tasks changes: {len(reminders)}")
@@ -4681,9 +4690,9 @@ def run_tasks_sync(config: dict[str, Any], dry_run: bool = False) -> None:
             recently_synced_task_ids[(tasklist_id, uid)] = str(task["id"])
 
     if skip_stale:
-        print("Skipping stale completion/deletion because the Reminders source exported 0 items.")
+        print("Skipping stale deletion because the active Reminders source exported 0 items; explicit completions may still propagate.")
 
-    if allow_deletes:
+    if allow_deletes or allow_completions:
         stale: dict[tuple[str, str], dict[str, Any]] = {}
         for key, record in list(state.setdefault("tasks", {}).items()):
             if not isinstance(record, dict):
@@ -4697,7 +4706,7 @@ def run_tasks_sync(config: dict[str, Any], dry_run: bool = False) -> None:
             if not list_allows_delete_propagation(
                 config,
                 list_title,
-                safety_allows_deletes=allow_deletes,
+                safety_allows_deletes=allow_deletes or allow_completions,
             ):
                 continue
             if (tasklist_id, task_id) in claimed_task_ids:
@@ -4718,7 +4727,7 @@ def run_tasks_sync(config: dict[str, Any], dry_run: bool = False) -> None:
             if not list_allows_delete_propagation(
                 config,
                 list_title,
-                safety_allows_deletes=allow_deletes,
+                safety_allows_deletes=allow_deletes or allow_completions,
             ):
                 continue
             for uid, task in existing_by_list.get(list_title, {}).items():
@@ -4744,7 +4753,7 @@ def run_tasks_sync(config: dict[str, Any], dry_run: bool = False) -> None:
             record = candidate.get("record") if isinstance(candidate.get("record"), dict) else None
             completed_item = completed_by_list.get(list_title, {}).get(uid)
 
-            if config["tasks_complete_stale"] and completed_item:
+            if allow_completions and config["tasks_complete_stale"] and completed_item:
                 body, digest, reminder = completed_item
                 title = str(body.get("title") or reminder.get("title") or uid)
                 if dry_run:
@@ -4774,6 +4783,8 @@ def run_tasks_sync(config: dict[str, Any], dry_run: bool = False) -> None:
                 save_task_state(state, tasklist_id, uid, patched, digest, title, reminder, config, list_title)
                 continue
 
+            if not allow_deletes:
+                continue
             if dry_run:
                 print(f"DRY-RUN delete stale task: {uid}")
                 continue

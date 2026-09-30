@@ -95,6 +95,31 @@ subtasks, exact-time reminders, all-empty-list behavior, or a persistent agent.
 4. Address Google External/Testing's seven-day refresh-token expiry before
    describing this as a low-maintenance daily installation.
 
+## Last-item completion boundary
+
+During widget preparation, an additional regression reproduced that completing
+the last active reminder leaves its Google task incomplete: the empty-source
+guard previously disabled both deletion and completion processing. The repair
+separates permission to propagate a positively observed completed reminder from
+permission to delete a missing item. Both planning and execution retain the
+empty-source deletion guard, per-list policy checks, and destructive-plan limit.
+The explicit no-deletion-propagation setting still suppresses completions.
+
+The new orchestration test supplies one explicitly completed reminder and one
+missing tracked reminder, with zero active reminders. Before the repair it fails
+because no completion is written; afterward only the completed item is patched,
+the missing item is never deleted, and a disabled-propagation subcase writes
+nothing. The full isolated suite now passes 95 tests. Logs are in task-folder
+`audit/last-completion-before.log` and `audit/last-completion-after.log`.
+Live last-item/widget verification remains pending; do not infer it from tests.
+
+The user opened the widget gallery, and automation could select the native Mac
+Reminders category. Adding the medium preview and pressing Done did not yield a
+verifiable Reminders desktop window: subsequent native AX/screenshot observations
+selected the existing Photos widget. The user has been asked to manually add the
+Reminders widget and select `Bridge Test 2026-09-30`; no successful widget
+placement or checkbox interaction is claimed yet.
+
 The reviewed network paths use official Google endpoints and local EventKit.
 This source review and bounded trial are evidence of observed behavior, not a
 formal guarantee against all security or synchronization defects.

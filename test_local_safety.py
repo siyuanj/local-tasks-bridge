@@ -12,6 +12,54 @@ import icloud_reminders_google_sync as sync
 
 
 class LocalSafetyTests(unittest.TestCase):
+    def test_last_completion_propagates_without_deleting_missing_items(self):
+        for propagation_enabled in (True, False):
+            with self.subTest(propagation_enabled=propagation_enabled), tempfile.TemporaryDirectory() as directory:
+                config = sync.default_config()
+                config.update(state_path=str(Path(directory) / "state.json"),
+                              delete_stale=propagation_enabled, tasks_complete_stale=True,
+                              allow_empty_source_delete=False, max_destructive_ratio=1.0,
+                              verify_title_due_after_sync=False)
+                state = {"version": 1, "events": {}, "tasks": {}}
+                binding = {"version": 1, "apple": "synthetic-apple", "google": "synthetic-google"}
+                sync.bind_or_validate_sync_state_accounts(state, binding)
+                tasks = []
+                for name in ("finished", "missing"):
+                    reminder = {"stable_id": name, "title": name, "notes": "",
+                                "list_title": "Trial", "list_id": "apple-list",
+                                "account_id": "synthetic-account", "due_date": "2026-09-30",
+                                "due_at": None, "all_day": True, "is_completed": False,
+                                "modified_at": "2026-09-30T00:00:00Z", "completed_at": None}
+                    uid, body, digest = sync.build_task(reminder, config)
+                    task = {**body, "id": name, "status": "needsAction"}
+                    tasks.append(task)
+                    sync.save_task_state(state, "google-list", uid, task, digest,
+                                         name, reminder, config, "Trial")
+                    if name == "finished":
+                        finished = {**reminder, "is_completed": True,
+                                    "completed_at": "2026-09-30T01:00:00Z"}
+                        finished_uid, finished_body, finished_digest = sync.build_task(finished, config)
+                client = mock.Mock()
+                client.patch_task.return_value = {**tasks[0], "status": "completed"}
+                with contextlib.ExitStack() as stack:
+                    def patch(name, **kwargs):
+                        return stack.enter_context(mock.patch.object(sync, name, **kwargs))
+                    patch("build_desired_tasks", return_value=([], {"Trial": {}}, 0))
+                    patch("build_completed_tasks", return_value=(
+                        [finished], {"Trial": {finished_uid: (finished_body, finished_digest, finished)}}, 0))
+                    patch("load_state", return_value=state)
+                    patch("resolve_sync_account_binding", return_value=binding)
+                    patch("GoogleTasksClient", return_value=client)
+                    patch("inspect_tasklists_for_desired", return_value=({"Trial": "google-list"}, []))
+                    patch("list_task_snapshot", return_value=(tasks, []))
+                    stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+                    sync.run_tasks_sync(config)
+                client.delete_task.assert_not_called()
+                if propagation_enabled:
+                    client.patch_task.assert_called_once_with("google-list", "finished", {"status": "completed"})
+                else:
+                    client.patch_task.assert_not_called()
+
     def test_inbound_completion_is_not_deleted_using_stale_completed_snapshot(self):
         with tempfile.TemporaryDirectory() as directory:
             config = sync.default_config()

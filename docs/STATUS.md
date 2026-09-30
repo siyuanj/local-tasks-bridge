@@ -1,5 +1,18 @@
 # Local trial status
 
+## 2026-09-30 22:53 CST (Asia/Shanghai) - 桌面完成回写通过，My Tasks 首次接入
+
+- 用户决定：已在桌面勾选 C；选择日常同步现有 My Tasks。并询问组件是否隐藏完成项，已说明完成后退出组件但保留记录。
+- 本次真实验收：测试清单活动项 0；dry-run 计划 1 项完成，真实运行 completed=1、deleted=0；Google API 确认 A/B/C 全部 completed，原生 UI 也显示 3 项完成。复核计划 total=0。最后一条桌面完成的真实回归通过。
+- 日常接入：通过原生 UI 在 iCloud 新建 My Tasks；私有 daily-config.json 使用独立 daily-state/status、复用本人 OAuth、只选择 My Tasks、禁止创建新 Google 清单。首次同步禁用完成/删除传播，导入 12 条未完成项，google_applied=12，Google inserted/updated/completed/deleted 均为 0；对已有 Google 记录附加同步元数据。初始快照 11 条活动项，期间 Google 新增 1 条，已重新读取并纳入 12 条核验。
+- 核验：导入前后 Google 已有任务 ID、完成状态、删除状态全部保留；Google 与 EventKit 的 12 条活动标题多重集合相同，原生 UI 侧栏显示 My Tasks 12。已有 12 条 Google 完成历史未导入 Mac。随后启用已验证的完成传播，单次破坏性限额仍为 1，空活动清单防删与冲突跳过保留；dry-run total=0。此设置也允许限额内删除传播，通用删除未做真实验收。
+- 变更与自审：本次无同步代码修改，无必要重复此前 95 项离线测试；更新验收文档及状态。私有配置和快照均在 ~/.config/reminders-task-bridge-trial，未纳入 Git。
+- 证据：widget-complete-dry/live/converged.log、daily-first-dry/live.log、daily-converged.log、daily-google-before-latest/after.json、daily-apple-after.json（全部私有目录）。测试使用源码 6629846，当前仅文档更新。
+- 阻塞/下一步：已请用户把桌面组件列表切换为 My Tasks；原生组件配置窗口自动化不可靠。后台同步尚未安装，当前仍是手动同步；长期 OAuth（Testing 7 天）和日常后台运行待后续处理。
+- 尚未验证：My Tasks 在桌面组件实际显示、Gemini 本次直接创建任务、重复任务/子任务/精确时间、长期后台可靠性。
+- 要用户定的：无新增权限；只需完成桌面组件列表切换。
+
+
 ## 2026-09-30 22:48 CST (Asia/Shanghai) - 桌面组件实际显示已确认
 
 - 用户操作与证据：用户已将原生提醒事项桌面组件切换至 Bridge Test 2026-09-30，截图显示 1 条未完成的 Bridge test C；截图保存在任务目录 audit/widget-visible-user.png。桌面显示已验证，不再仅为注册/编辑器元数据。

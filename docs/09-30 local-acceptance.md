@@ -17,9 +17,9 @@ Calendar or Cloud Platform scope. No credentials belong in this document.
 
 ## Actual acceptance results
 
-All live changes were restricted to `Bridge Test 2026-09-30` in Google Tasks and
-the matching iCloud Reminders list. The pre-existing `My Tasks` list was not
-selected for synchronization.
+The isolated trial used only `Bridge Test 2026-09-30` in Google Tasks and
+the matching iCloud Reminders list. My Tasks was connected later after the user
+selected it explicitly; see the everyday import record below.
 
 | Case | Result |
 | --- | --- |
@@ -31,13 +31,14 @@ selected for synchronization.
 | Google completes B, Mac receives completion | Initially exposed a deletion bug; repaired and rerun |
 | Repeat sync after convergence | Zero mutations, one active item unchanged |
 | Desktop widget rendering | User screenshot verifies the correct list and active C |
-| Desktop widget checkbox completion | Pending user click and live API verification |
+| Desktop widget checkbox completion | User clicked C; live sync completed=1, deleted=0; API confirms C completed |
 
-Current disposable test state: A and B completed on both sides; C remains active
-for the desktop-widget checkbox test. The original Google B was accidentally
+Current disposable test state: A, B, and C are completed on both sides. The user
+completed C from the desktop widget; a live sync propagated exactly one
+completion and no deletion. A follow-up plan contains zero mutations. The original Google B was accidentally
 deleted by the upstream bug during the isolated trial. B was reactivated on the
 Mac and recreated in Google under a new task ID before retesting. No everyday
-list was connected.
+list was connected during that isolated defect trial.
 
 ## Reproduced defect and repair
 
@@ -90,9 +91,9 @@ subtasks, exact-time reminders, all-empty-list behavior, or a persistent agent.
 ## Remaining work
 
 1. Desktop rendering is verified by the user screenshot (audit/widget-visible-user.png).
-2. Verify a desktop checkbox completion reaches Google after the user clicks C.
-3. Only then configure the everyday list and an explicitly documented persistent
-   runtime; the current Python path belongs to the existing Codex runtime.
+2. Desktop checkbox completion is verified by Google API and the native completed list.
+3. My Tasks initial import is verified below. Its desktop widget selection and
+   persistent runtime remain pending; Python currently belongs to the Codex runtime.
 4. Address Google External/Testing's seven-day refresh-token expiry before
    describing this as a low-maintenance daily installation.
 
@@ -112,7 +113,8 @@ because no completion is written; afterward only the completed item is patched,
 the missing item is never deleted, and a disabled-propagation subcase writes
 nothing. The full isolated suite now passes 95 tests. Logs are in task-folder
 `audit/last-completion-before.log` and `audit/last-completion-after.log`.
-Live last-item/widget verification remains pending; do not infer it from tests.
+Live last-item/widget verification subsequently passed: completed=1, deleted=0;
+Google API retains all three completed test tasks. The next plan is empty.
 
 The user opened the widget gallery, and automation could select the native Mac
 Reminders category. Adding the medium preview and pressing Done did not yield a
@@ -126,3 +128,24 @@ a fresh Google API read at 22:48 CST still shows C needsAction and A/B completed
 The reviewed network paths use official Google endpoints and local EventKit.
 This source review and bounded trial are evidence of observed behavior, not a
 formal guarantee against all security or synchronization defects.
+
+## Everyday My Tasks import
+
+The user selected the existing Google My Tasks list. A native iCloud list with
+the same name was created, and a separate private daily-config.json and state
+were used. The initial import disabled stale completion/deletion propagation.
+It imported 12 active Google tasks and attached synchronization metadata to
+the existing Google records; no new Google task was created, completed, or
+deleted. All pre-existing Google task IDs and completion/deletion states were
+verified unchanged. EventKit and Google active-title multisets match at 12;
+the native Reminders sidebar also shows 12. Twelve old completed Google records
+were preserved in Google but were not imported into Mac Reminders.
+
+After the initial state was established, completion propagation was enabled
+with the prior one-destructive-change limit, conflict skipping, and empty-source
+deletion protection. The resulting dry-run is empty. The upstream setting also
+enables missing-item deletion within these limits; general deletion has not
+been live-tested. No persistent agent is installed. The user has been asked to
+switch the desktop widget to My Tasks; its everyday rendering remains pending.
+Private evidence: daily-first-live.log, daily-converged.log,
+daily-google-before-latest.json, daily-google-after.json, daily-apple-after.json.

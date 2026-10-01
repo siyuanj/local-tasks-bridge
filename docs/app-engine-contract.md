@@ -284,10 +284,12 @@ written to stdout, each starting with `@@LTB ` followed by a JSON object:
 | `notification` | `title`, `message`, `severity` (`info` or `problem`) |
 | `approval_requested` | `destructive_fingerprint`, `destructive_count` |
 
-When the event stream is on, the engine does **not** call `osascript` for
-notifications; the app posts them. The bulk-change approval dialog is still
-shown by the engine via `osascript` (it has to wait for an answer), and the
-app additionally offers **Review Pending Changes…** through `approvals`.
+When the event stream is on, the engine does **not** call `osascript`: the app
+posts notifications, and instead of the engine's bulk-change dialog it receives
+`approval_requested` (once per plan, repeated only after 12 hours without an
+answer) and opens its **Review Pending Changes** window, which answers with
+`approvals apply` or `approvals hold`. Without the app, the engine shows an
+`osascript` dialog as before.
 
 The loop starts a cycle within about one second when `sync-now` is touched
 (no more often than `trigger_min_interval_seconds`, default 10, after the

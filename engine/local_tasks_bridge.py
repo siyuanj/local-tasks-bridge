@@ -6455,6 +6455,12 @@ class MutationPlanApprovals:
         if decision in {"hold", "unavailable"} and decided_at and (now - decided_at).total_seconds() < repeat:
             return False
         if memory.get("destructive_fingerprint") == fingerprint:
+            if event_stream_enabled() and not memory.get("decision"):
+                # The menu bar app is showing this question in its own
+                # window; ask again only after it has been open a long time.
+                prompted_at = parse_status_time(memory.get("prompted_at"))
+                if prompted_at and (now - prompted_at).total_seconds() < MUTATION_APPROVAL_DIALOG_SECONDS:
+                    return False
             return not self.approval_token(fingerprint, now)
         prompted_at = parse_status_time(memory.get("prompted_at"))
         return not (prompted_at and (now - prompted_at).total_seconds() < MUTATION_APPROVAL_NEW_PLAN_GAP_SECONDS)
@@ -6476,6 +6482,17 @@ class MutationPlanApprovals:
         if not self.should_ask(fingerprint, now):
             return
         process = None
+        if self.config.get("mutation_approval_prompt") and event_stream_enabled():
+            # Hosted by the menu bar app: it opens its review window on this
+            # event and records the answer with `approvals apply/hold`.
+            self.remember(fingerprint, "", now=now, prompted=True)
+            print("Asked the menu bar app to review a large destructive mutation plan.", flush=True)
+            emit_event(
+                "approval_requested",
+                destructive_fingerprint=fingerprint,
+                destructive_count=len(review.get("items") or []),
+            )
+            return
         if self.config.get("mutation_approval_prompt"):
             process = launch_mutation_approval_dialog(
                 mutation_approval_dialog_title(),

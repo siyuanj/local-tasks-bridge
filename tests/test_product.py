@@ -548,6 +548,23 @@ class SchedulerControlTests(unittest.TestCase):
             self.assertEqual(approvals.memory["decision"], "hold")
             self.assertFalse(approvals.should_ask(fingerprint, sync.utc_now()))
 
+    def test_app_hosted_loop_asks_through_the_app_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_name:
+            config = isolated_config(Path(tmp_name), mutation_approval_prompt=True, macos_notifications=False)
+            approvals = sync.MutationPlanApprovals(config)
+            fingerprint = "b" * 64
+            review = {"destructive_fingerprint": fingerprint, "items": [{"title": "x"}, {"title": "y"}]}
+            events: list[tuple[str, dict[str, object]]] = []
+            with mock.patch.dict(os.environ, {"LTB_EVENT_STREAM": "stdout"}), \
+                    mock.patch.object(sync, "launch_mutation_approval_dialog", side_effect=AssertionError("no osascript")), \
+                    mock.patch.object(sync, "emit_event", side_effect=lambda name, **fields: events.append((name, fields))):
+                for _cycle in range(4):
+                    approvals.observe({"fingerprint": "plan"}, review)
+                    approvals.consider(review)
+            self.assertEqual([name for name, _fields in events], ["approval_requested"])
+            self.assertEqual(events[0][1]["destructive_count"], 2)
+            self.assertEqual(sync.read_sync_status(config)["mutation_approval"]["destructive_fingerprint"], fingerprint)
+
     def test_manager_hold_never_overrides_a_pause_the_person_set(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_name:
             config = isolated_config(Path(tmp_name))

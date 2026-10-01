@@ -1239,16 +1239,27 @@ class GoogleTasksClient:
             headers["Content-Type"] = "application/json; charset=utf-8"
 
         request = urllib.request.Request(url, data=data, headers=headers, method=method)
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                raw = response.read().decode("utf-8")
-                return json.loads(raw) if raw else {}
-        except urllib.error.HTTPError as exc:
-            raw = exc.read().decode("utf-8", errors="replace")
-            if exc.code == 401 and retry:
-                self.token = refresh_token_with_fallback(self.config, self.token)
-                return self.request(method, path, params=params, body=body, retry=False)
-            raise GoogleApiError(exc.code, raw) from exc
+        # Local proxy connections can occasionally end during TLS setup. Only
+        # retry idempotent reads: repeating a POST/PATCH/DELETE after an unknown
+        # transport outcome could duplicate or overwrite a user change.
+        network_attempts = 3 if method == "GET" else 1
+        for attempt in range(1, network_attempts + 1):
+            try:
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    raw = response.read().decode("utf-8")
+                    return json.loads(raw) if raw else {}
+            except urllib.error.HTTPError as exc:
+                raw = exc.read().decode("utf-8", errors="replace")
+                if exc.code == 401 and retry:
+                    self.token = refresh_token_with_fallback(self.config, self.token)
+                    return self.request(method, path, params=params, body=body, retry=False)
+                raise GoogleApiError(exc.code, raw) from exc
+            except urllib.error.URLError:
+                if attempt >= network_attempts:
+                    raise
+                time.sleep(min(2**attempt, 10))
+
+        raise AssertionError("unreachable Google Tasks request retry state")
 
     def list_tasklists(self) -> list[dict[str, Any]]:
         params: dict[str, Any] = {"maxResults": 1000}

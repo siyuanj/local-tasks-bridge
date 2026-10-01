@@ -243,6 +243,47 @@ class AccountBindingIsolationTests(unittest.TestCase):
                 client.access_token()
 
 
+class GoogleTasksNetworkRetryTests(unittest.TestCase):
+    def make_client(self) -> sync.GoogleTasksClient:
+        token = {
+            "refresh_token": "PRIVATE-REFRESH",
+            "access_token": "PRIVATE-ACCESS",
+            "expires_at": 4_102_444_800,
+        }
+        with mock.patch.object(sync, "load_token", return_value=token):
+            return sync.GoogleTasksClient(sync.default_config())
+
+    def test_get_retries_a_transient_transport_failure(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b'{"items":[]}'
+        client = self.make_client()
+
+        with mock.patch.object(
+            sync.urllib.request,
+            "urlopen",
+            side_effect=[sync.urllib.error.URLError("temporary TLS EOF"), response],
+        ) as urlopen, mock.patch.object(sync.time, "sleep") as sleep:
+            result = client.request("GET", "/users/@me/lists")
+
+        self.assertEqual(result, {"items": []})
+        self.assertEqual(urlopen.call_count, 2)
+        sleep.assert_called_once_with(2)
+
+    def test_mutating_request_is_not_retried_after_transport_failure(self) -> None:
+        client = self.make_client()
+
+        with mock.patch.object(
+            sync.urllib.request,
+            "urlopen",
+            side_effect=sync.urllib.error.URLError("unknown POST outcome"),
+        ) as urlopen, mock.patch.object(sync.time, "sleep") as sleep:
+            with self.assertRaises(sync.urllib.error.URLError):
+                client.request("POST", "/users/@me/lists", body={"title": "Synthetic"})
+
+        self.assertEqual(urlopen.call_count, 1)
+        sleep.assert_not_called()
+
+
 class GoogleTasksDueTests(unittest.TestCase):
     def test_reminders_apply_uses_stable_list_id_without_unsafe_title_fallback(self) -> None:
         source = (Path(__file__).resolve().parent / "RemindersApply.swift").read_text(encoding="utf-8")

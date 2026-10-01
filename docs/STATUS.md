@@ -1,5 +1,31 @@
 # Local trial status
 
+## 2026-10-01 15:42 CST (Asia/Shanghai) - 私有产品仓库建立
+
+- 用户要求：解释 OAuth 网站用途，并把当前桥接代码放入本人仓库，作为后续打包和
+  产品化的基础。网站仅用于 Google OAuth Branding 的应用主页与隐私政策，不承载
+  同步服务，也不接收任务或 token。
+- 安全检查：对当前树和全部可见 Git 历史扫描 Google access/refresh token、API key、
+  OAuth client ID 和私钥格式，命中 0；没有凭据文件被跟踪。将文档中唯一写死的
+  `/Users/jiangsiyuan` 路径改为 `$HOME`。保留原项目 MIT 许可证和 attribution。
+- 仓库迁移：创建私有仓库 `siyuanj/local-tasks-bridge`，默认分支 `main`。本地原
+  `codex/local-safe-trial` 改为 `main`；原作者仓库改名为 fetch-only `upstream`，
+  push URL 为 `DISABLED`。第一次 HTTP/2 推送失败，第二次直连超时；代理推送暴露
+  原检出为 shallow clone。随后从公开 upstream 补齐历史，`git fsck --full --strict`
+  通过并成功推送。
+- 现在真实状态：产品代码迁移基线
+  `96f5190b57d49573e0f9f3fbf6d9338fe4d52ff7` 已完成本地/远端一致核验；远端可见性 PRIVATE，主页为
+  `https://siyuanj.github.io/local-tasks-bridge/`。发布来源门禁已在无 override 情况下
+  验证 repository=`siyuanj/local-tasks-bridge`、branch=`main`、commit 一致。
+  97 项测试、pycompile、shell 语法和 release gate 均通过。
+- 产品准备：README 已改为 `Local Tasks Bridge` 并说明上游来源；新增
+  `docs/10-01 product-roadmap.md`，覆盖可复现发布、可安装 App、Keychain、OAuth
+  分发、签名/公证、测试矩阵和当前 public-release no-go 条件。
+- 卡在哪：当前私有仓库无阻塞。
+- 还没验证的：面向他人的安装包、Keychain、签名/公证、干净 Mac 安装、升级/卸载、
+  广泛 OAuth 分发要求尚未完成；当前仍是本人 Mac 已验收的本地产品基线。
+- 要用户定的：仓库目前保持私有；未来何时公开及产品名称/图标属于后续决定。
+
 ## 2026-10-01 15:19 CST (Asia/Shanghai) - Mac 到 Google 的轮询延迟修复
 
 - 用户反馈：Google Tasks 到 Mac 感觉较快，但提醒事项写回 Google 较慢。实测旧版

@@ -1,10 +1,12 @@
-# Local secrets and runtime state
+# Local secrets and runtime state. Never commit Google OAuth clients, tokens,
+# sync state, or signing material.
 .env
 .env.*
 !.env.example
 !.env.*.example
 credentials.json
 client_secret*.json
+oauth_client.json
 *.apps.googleusercontent.com.json
 application_default_credentials.json
 config.json
@@ -15,11 +17,36 @@ status.json
 sessions/
 cookies*
 com.icloud-reminders-google-sync.plist
+io.github.siyuanj.local-tasks-bridge.plist
+*.p12
+*.cer
+*.keychain
+*.keychain-db
+*.mobileprovision
+*.provisionprofile
 
-# Generated caches
+# Build output (scripts/build-app.sh, scripts/fetch-python.sh,
+# scripts/package-release.sh) and release artifacts.
+build/
+dist/
+release/
+*.app/
+*.dSYM/
+*.zip
+SHA256SUMS
+release-manifest.json
+
+# Swift, Xcode, and Python caches
+.build/
+.swiftpm/
+DerivedData/
+xcuserdata/
+*.xcuserstate
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.venv/
+venv/
 node_modules/
 
 # Local exports and temporary files
@@ -28,17 +55,14 @@ node_modules/
 *.tmp
 *.temp
 .DS_Store
+._*
 *.db
 *.sqlite
 *.sqlite3
 data/
 media/
 exports/
-dist/
 server-dist/
-build/
-release/
-*.zip
 icloud-reminders-google-sync-migration-*.tar.gz
 reminders-export*.json
 tasks-export*.json

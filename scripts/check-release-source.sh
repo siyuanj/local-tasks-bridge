@@ -1,38 +1,45 @@
 #!/usr/bin/env bash
+#
+# Fail-closed maintainer gate: verify that a release is cut from reviewed,
+# pushed main of the expected GitHub repository.
+#
+# Run it before tagging a release:
+#
+#   DEPLOY_EXPECTED_COMMIT=<full-reviewed-sha> scripts/check-release-source.sh
+
 set -euo pipefail
 
-EXPECTED_REPOSITORY="siyuanj/local-tasks-bridge"
-EXPECTED_BRANCH="main"
+readonly DEFAULT_REPOSITORY="siyuanj/local-tasks-bridge"
+readonly EXPECTED_BRANCH="main"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 SOURCE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
-BOOTSTRAP_MANIFEST=""
 
 usage() {
   cat <<'USAGE'
 Usage:
-  DEPLOY_EXPECTED_COMMIT=<full-sha> bash scripts/check-release-source.sh
-  DEPLOY_EXPECTED_COMMIT=<full-sha> \
-    DEPLOY_GIT_ALLOW_BOOTSTRAP=1 \
-    DEPLOY_GIT_OVERRIDE_REASON='first-machine verified migration bundle' \
-    bash scripts/check-release-source.sh --bootstrap-manifest release-source.txt
+  DEPLOY_EXPECTED_COMMIT=<full-sha> bash scripts/check-release-source.sh [--source-dir DIR]
 
 Options:
-  --source-dir DIR           Source directory to verify. Defaults to the repository root.
-  --bootstrap-manifest FILE  Verify a migration bundle instead of a Git checkout.
-  -h, --help                 Show this help.
+  --source-dir DIR  Git checkout to verify. Defaults to the repository root.
+  -h, --help        Show this help.
 
-Normal releases require a clean main checkout whose HEAD matches both
-origin/main and the live origin main ref. DEPLOY_EXPECTED_COMMIT is mandatory
-and must be the full local HEAD.
+A release source must be a clean main checkout whose HEAD equals local
+origin/main, the live origin main ref, and DEPLOY_EXPECTED_COMMIT (mandatory,
+the full 40-character SHA you reviewed). origin must point to the expected
+GitHub repository.
 
-Emergency overrides:
-  DEPLOY_GIT_ALLOW_DIRTY=1
-  DEPLOY_GIT_ALLOW_NON_MAIN=1
-  DEPLOY_GIT_ALLOW_UNPUSHED=1
+Configuration:
+  LTB_EXPECTED_REPOSITORY  GitHub owner/name that origin must point to
+                           (default siyuanj/local-tasks-bridge). Forks set
+                           their own repository here.
 
-Every override requires a non-empty DEPLOY_GIT_OVERRIDE_REASON. The expected
-GitHub origin cannot be overridden. Bundle bootstrap is separate and requires
-DEPLOY_GIT_ALLOW_BOOTSTRAP=1 plus the same audit reason.
+Emergency overrides (each needs a non-empty DEPLOY_GIT_OVERRIDE_REASON and is
+reported as an AUDIT OVERRIDE line):
+  DEPLOY_GIT_ALLOW_DIRTY=1     allow tracked or untracked changes
+  DEPLOY_GIT_ALLOW_NON_MAIN=1  allow another branch or a detached HEAD
+  DEPLOY_GIT_ALLOW_UNPUSHED=1  allow HEAD to differ from origin/main
+
+There is no override for the origin check.
 USAGE
 }
 
@@ -46,42 +53,29 @@ warn_override() {
 }
 
 validate_flag() {
-  local name="$1"
-  local value="$2"
-  case "$value" in
+  case "$2" in
     0|1) ;;
-    *) die "${name} must be 0 or 1." ;;
+    *) die "$1 must be 0 or 1." ;;
   esac
 }
 
+lowercase() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+# Print owner/name for a GitHub remote URL, or fail for anything else.
 origin_repository() {
-  local url="$1"
-  local repository=""
+  local url="$1" repository
 
   case "$url" in
-    https://github.com/*)
-      repository="${url#https://github.com/}"
-      ;;
-    git@github.com:*)
-      repository="${url#git@github.com:}"
-      ;;
-    ssh://git@github.com/*)
-      repository="${url#ssh://git@github.com/}"
-      ;;
-    *)
-      return 1
-      ;;
+    https://github.com/*) repository="${url#https://github.com/}" ;;
+    git@github.com:*) repository="${url#git@github.com:}" ;;
+    ssh://git@github.com/*) repository="${url#ssh://git@github.com/}" ;;
+    *) return 1 ;;
   esac
-
   repository="${repository%/}"
   repository="${repository%.git}"
   printf '%s\n' "$repository"
-}
-
-manifest_value() {
-  local manifest="$1"
-  local key="$2"
-  awk -F= -v wanted="$key" '$1 == wanted {sub(/^[^=]*=/, ""); print; exit}' "$manifest"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -92,10 +86,8 @@ while [ "$#" -gt 0 ]; do
       [ -d "$1" ] || die "Source directory does not exist: $1"
       SOURCE_DIR="$(cd "$1" && pwd -P)"
       ;;
-    --bootstrap-manifest)
-      shift
-      [ "$#" -gt 0 ] || die "--bootstrap-manifest requires a value."
-      BOOTSTRAP_MANIFEST="$1"
+    --bootstrap-manifest|--bootstrap-manifest=*)
+      die "Migration-bundle bootstrap was removed; releases are verified from a Git checkout only."
       ;;
     -h|--help)
       usage
@@ -111,17 +103,29 @@ done
 ALLOW_DIRTY="${DEPLOY_GIT_ALLOW_DIRTY:-0}"
 ALLOW_NON_MAIN="${DEPLOY_GIT_ALLOW_NON_MAIN:-0}"
 ALLOW_UNPUSHED="${DEPLOY_GIT_ALLOW_UNPUSHED:-0}"
-ALLOW_BOOTSTRAP="${DEPLOY_GIT_ALLOW_BOOTSTRAP:-0}"
 DEPLOY_GIT_OVERRIDE_REASON="${DEPLOY_GIT_OVERRIDE_REASON:-}"
 EXPECTED_COMMIT="${DEPLOY_EXPECTED_COMMIT:-}"
+EXPECTED_REPOSITORY="${LTB_EXPECTED_REPOSITORY:-$DEFAULT_REPOSITORY}"
+REPOSITORY_PATTERN='^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$'
+
+case "${DEPLOY_GIT_ALLOW_BOOTSTRAP:-}" in
+  ''|0) ;;
+  *) die "DEPLOY_GIT_ALLOW_BOOTSTRAP is no longer supported: migration-bundle bootstrap was removed." ;;
+esac
 
 validate_flag DEPLOY_GIT_ALLOW_DIRTY "$ALLOW_DIRTY"
 validate_flag DEPLOY_GIT_ALLOW_NON_MAIN "$ALLOW_NON_MAIN"
 validate_flag DEPLOY_GIT_ALLOW_UNPUSHED "$ALLOW_UNPUSHED"
-validate_flag DEPLOY_GIT_ALLOW_BOOTSTRAP "$ALLOW_BOOTSTRAP"
 
-if [ "$ALLOW_DIRTY" -eq 1 ] || [ "$ALLOW_NON_MAIN" -eq 1 ] || [ "$ALLOW_UNPUSHED" -eq 1 ] || [ "$ALLOW_BOOTSTRAP" -eq 1 ]; then
+if [ "$ALLOW_DIRTY" -eq 1 ] || [ "$ALLOW_NON_MAIN" -eq 1 ] || [ "$ALLOW_UNPUSHED" -eq 1 ]; then
   [ -n "$DEPLOY_GIT_OVERRIDE_REASON" ] || die "DEPLOY_GIT_OVERRIDE_REASON is required when an override is enabled."
+fi
+
+EXPECTED_REPOSITORY="${EXPECTED_REPOSITORY%.git}"
+[[ $EXPECTED_REPOSITORY =~ $REPOSITORY_PATTERN ]] ||
+  die "LTB_EXPECTED_REPOSITORY must be a GitHub owner/name, got: ${EXPECTED_REPOSITORY}"
+if [ "$(lowercase "$EXPECTED_REPOSITORY")" != "$(lowercase "$DEFAULT_REPOSITORY")" ]; then
+  printf 'NOTICE: expected repository is %s (from LTB_EXPECTED_REPOSITORY)\n' "$EXPECTED_REPOSITORY" >&2
 fi
 
 [ -n "$EXPECTED_COMMIT" ] || die "DEPLOY_EXPECTED_COMMIT must contain the full reviewed commit SHA."
@@ -129,42 +133,8 @@ case "$EXPECTED_COMMIT" in
   *[!0-9a-fA-F]*) die "DEPLOY_EXPECTED_COMMIT must be a hexadecimal full commit SHA." ;;
 esac
 [ "${#EXPECTED_COMMIT}" -eq 40 ] || die "DEPLOY_EXPECTED_COMMIT must be the full 40-character commit SHA."
-EXPECTED_COMMIT="$(printf '%s' "$EXPECTED_COMMIT" | tr 'A-F' 'a-f')"
+EXPECTED_COMMIT="$(lowercase "$EXPECTED_COMMIT")"
 
-if [ -n "$BOOTSTRAP_MANIFEST" ]; then
-  [ "$ALLOW_BOOTSTRAP" -eq 1 ] || die "Bundle verification requires DEPLOY_GIT_ALLOW_BOOTSTRAP=1."
-  [ "$ALLOW_DIRTY" -eq 0 ] && [ "$ALLOW_NON_MAIN" -eq 0 ] && [ "$ALLOW_UNPUSHED" -eq 0 ] || \
-    die "Git overrides cannot be combined with bundle bootstrap."
-
-  case "$BOOTSTRAP_MANIFEST" in
-    /*) ;;
-    *) BOOTSTRAP_MANIFEST="${SOURCE_DIR}/${BOOTSTRAP_MANIFEST}" ;;
-  esac
-  [ -f "$BOOTSTRAP_MANIFEST" ] || die "Bootstrap manifest not found: $BOOTSTRAP_MANIFEST"
-  MANIFEST_DIR="$(cd "$(dirname "$BOOTSTRAP_MANIFEST")" && pwd -P)"
-  [ "$MANIFEST_DIR" = "$SOURCE_DIR" ] || die "Bootstrap manifest must be in the verified source directory."
-
-  MANIFEST_REPOSITORY="$(manifest_value "$BOOTSTRAP_MANIFEST" repository)"
-  MANIFEST_BRANCH="$(manifest_value "$BOOTSTRAP_MANIFEST" branch)"
-  MANIFEST_COMMIT="$(manifest_value "$BOOTSTRAP_MANIFEST" commit | tr 'A-F' 'a-f')"
-  [ "$MANIFEST_REPOSITORY" = "$EXPECTED_REPOSITORY" ] || die "Unexpected bundle repository: $MANIFEST_REPOSITORY"
-  [ "$MANIFEST_BRANCH" = "$EXPECTED_BRANCH" ] || die "Bundle branch must be ${EXPECTED_BRANCH}, got: $MANIFEST_BRANCH"
-  [ "$MANIFEST_COMMIT" = "$EXPECTED_COMMIT" ] || die "Bundle commit does not match DEPLOY_EXPECTED_COMMIT."
-
-  CHECKSUM_PATH="${SOURCE_DIR}/release-source.sha256"
-  [ -f "$CHECKSUM_PATH" ] || die "Bundle checksum file is missing: $CHECKSUM_PATH"
-  command -v shasum >/dev/null 2>&1 || die "shasum is required to verify the migration bundle."
-  (
-    cd "$SOURCE_DIR"
-    shasum -a 256 -c "$CHECKSUM_PATH"
-  )
-  warn_override "verified first-machine migration bundle"
-  printf 'Release source verified: repository=%s branch=%s commit=%s mode=bootstrap-bundle\n' \
-    "$EXPECTED_REPOSITORY" "$EXPECTED_BRANCH" "$MANIFEST_COMMIT"
-  exit 0
-fi
-
-[ "$ALLOW_BOOTSTRAP" -eq 0 ] || die "DEPLOY_GIT_ALLOW_BOOTSTRAP is valid only with --bootstrap-manifest."
 git -C "$SOURCE_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "Source is not a Git worktree: $SOURCE_DIR"
 GIT_ROOT="$(git -C "$SOURCE_DIR" rev-parse --show-toplevel)"
 GIT_ROOT="$(cd "$GIT_ROOT" && pwd -P)"
@@ -173,9 +143,11 @@ GIT_ROOT="$(cd "$GIT_ROOT" && pwd -P)"
 ORIGIN_URL="$(git -C "$SOURCE_DIR" config --get remote.origin.url 2>/dev/null || true)"
 [ -n "$ORIGIN_URL" ] || die "origin is not configured."
 ORIGIN_REPOSITORY="$(origin_repository "$ORIGIN_URL" || true)"
-[ "$ORIGIN_REPOSITORY" = "$EXPECTED_REPOSITORY" ] || die "origin must be ${EXPECTED_REPOSITORY}, got: ${ORIGIN_URL}"
+# GitHub owner and repository names are case-insensitive.
+[ "$(lowercase "$ORIGIN_REPOSITORY")" = "$(lowercase "$EXPECTED_REPOSITORY")" ] ||
+  die "origin must be ${EXPECTED_REPOSITORY}, got: ${ORIGIN_URL}"
 
-HEAD_COMMIT="$(git -C "$SOURCE_DIR" rev-parse HEAD | tr 'A-F' 'a-f')"
+HEAD_COMMIT="$(lowercase "$(git -C "$SOURCE_DIR" rev-parse HEAD)")"
 [ "$HEAD_COMMIT" = "$EXPECTED_COMMIT" ] || die "HEAD ${HEAD_COMMIT} does not match DEPLOY_EXPECTED_COMMIT ${EXPECTED_COMMIT}."
 
 CURRENT_BRANCH="$(git -C "$SOURCE_DIR" branch --show-current)"
@@ -192,13 +164,13 @@ fi
 
 ORIGIN_MAIN="$(git -C "$SOURCE_DIR" rev-parse --verify refs/remotes/origin/main 2>/dev/null || true)"
 REMOTE_MAIN="$(git -C "$SOURCE_DIR" ls-remote --exit-code origin refs/heads/main 2>/dev/null | awk 'NR == 1 {print $1}' || true)"
-ORIGIN_MAIN="$(printf '%s' "$ORIGIN_MAIN" | tr 'A-F' 'a-f')"
-REMOTE_MAIN="$(printf '%s' "$REMOTE_MAIN" | tr 'A-F' 'a-f')"
+ORIGIN_MAIN="$(lowercase "$ORIGIN_MAIN")"
+REMOTE_MAIN="$(lowercase "$REMOTE_MAIN")"
 
 if [ "$ORIGIN_MAIN" != "$HEAD_COMMIT" ] || [ "$REMOTE_MAIN" != "$HEAD_COMMIT" ]; then
   [ "$ALLOW_UNPUSHED" -eq 1 ] || die "HEAD must match both local origin/main and live origin main."
   warn_override "HEAD differs from origin/main or live origin main"
 fi
 
-printf 'Release source verified: repository=%s branch=%s commit=%s mode=git\n' \
-  "$EXPECTED_REPOSITORY" "$CURRENT_BRANCH" "$HEAD_COMMIT"
+printf 'Release source verified: repository=%s branch=%s commit=%s\n' \
+  "$EXPECTED_REPOSITORY" "${CURRENT_BRANCH:-detached}" "$HEAD_COMMIT"

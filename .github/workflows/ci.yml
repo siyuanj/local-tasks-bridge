@@ -1,6 +1,8 @@
 name: CI
 
 on:
+  push:
+    branches: [main]
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
@@ -13,16 +15,88 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
+  unit:
+    name: Unit tests (Python ${{ matrix.python-version }})
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Python 3.9 is the oldest interpreter the engine supports (macOS
+          # /usr/bin/python3). setup-python ships no 3.9 builds for Ubuntu
+          # 26.04, so that job stays on 24.04.
+          - python-version: "3.9"
+            os: ubuntu-24.04
+          - python-version: "3.12"
+            os: ubuntu-latest
+          - python-version: "3.13"
+            os: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Run the unit tests
+        run: make test PYTHON=python
+
+  macos:
+    name: macOS app build and integration tests
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      APP: build/Local Tasks Bridge.app
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Show the toolchain
+        run: |
+          sw_vers
+          xcode-select -p
+          swiftc --version
+          /usr/bin/python3 --version
+          /bin/bash --version | head -n 1
+      - name: Syntax-check shell scripts with the bash macOS ships
+        run: make lint
+      - name: Build the arm64 app (no embedded Python)
+        run: /bin/bash scripts/build-app.sh --output build --arch arm64
+      - name: Verify the code signature
+        run: codesign --verify --strict --deep --verbose=2 "$APP"
+      - name: Smoke-test the bundle
+        run: |
+          "$APP/Contents/MacOS/LocalTasksBridge" --version
+          "$APP/Contents/MacOS/ltb-reminders-export" --help
+          "$APP/Contents/Resources/bin/ltb" version --json
+      - name: Install the built app with install.sh (temporary HOME)
+        run: |
+          scratch="$(mktemp -d)"
+          ditto -c -k --keepParent "$APP" "$scratch/LocalTasksBridge-macos-arm64.zip"
+          mkdir -p "$scratch/home"
+          HOME="$scratch/home" /bin/bash ./install.sh --zip "$scratch/LocalTasksBridge-macos-arm64.zip" \
+            --dest "$scratch/Applications" --no-open
+          HOME="$scratch/home" "$scratch/home/.local/bin/ltb" version --json
+      - name: End-to-end tests
+        run: make test-e2e PYTHON=/usr/bin/python3
+      - name: Installer tests
+        run: /bin/bash scripts/test-install.sh
+      - name: Release source gate self-test
+        run: /bin/bash scripts/test-release-source-gate.sh
+
+  lint:
+    name: Shell and workflow lint
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.12"
-      - run: python3 -B -m unittest test_icloud_reminders_google_sync.py
-      - run: python3 -B -m py_compile icloud_reminders_google_sync.py test_icloud_reminders_google_sync.py
-      - run: bash -n setup-new-mac.sh make-migration-bundle.sh scripts/*.sh
-      - run: bash scripts/test-release-source-gate.sh
+          persist-credentials: false
+      - name: Show shellcheck
+        run: shellcheck --version
+      - name: Lint (bash -n, shellcheck, Python syntax)
+        run: make lint REQUIRE_SHELLCHECK=1

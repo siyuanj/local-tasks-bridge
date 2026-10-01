@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
-  - name: Report a security vulnerability
-    url: https://github.com/syncweave-labs/reminders-task-bridge/security/advisories/new
-    about: Submit suspected vulnerabilities privately.
+  - name: Report a security vulnerability / 报告安全漏洞
+    url: https://github.com/siyuanj/local-tasks-bridge/security/advisories/new
+    about: Report suspected vulnerabilities privately, never in a public issue. / 请私下报告疑似漏洞，不要发布公开 issue。
+  - name: Documentation and troubleshooting / 文档与故障排查
+    url: https://github.com/siyuanj/local-tasks-bridge#readme
+    about: Setup, Google sign-in, and common problems. / 安装、Google 登录与常见问题。

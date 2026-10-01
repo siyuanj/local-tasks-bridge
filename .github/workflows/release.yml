@@ -1,0 +1,168 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build and publish, for example v1.0.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish the release
+    runs-on: macos-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      # Optional secrets. Each feature is enabled only when all of its secrets exist.
+      HAVE_SIGNING_CERT: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 != '' && secrets.MACOS_CERTIFICATE_PASSWORD != '' && secrets.MACOS_SIGN_IDENTITY != '' }}
+      HAVE_NOTARY_CREDENTIALS: ${{ secrets.APPLE_ID != '' && secrets.APPLE_TEAM_ID != '' && secrets.APPLE_APP_PASSWORD != '' }}
+    steps:
+      - name: Validate the tag name
+        run: |
+          if ! printf '%s\n' "$RELEASE_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Release tags look like v1.2.3; got '$RELEASE_TAG'."
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check VERSION, the engine version, CHANGELOG.md, and main
+        run: |
+          version="${RELEASE_TAG#v}"
+          file_version="$(tr -d ' \t\r\n' < VERSION)"
+          engine_version="$(sed -n 's/^__version__ = "\([^"]*\)".*/\1/p' engine/local_tasks_bridge.py | head -n 1)"
+          if [ "$file_version" != "$version" ]; then
+            echo "::error::VERSION says $file_version, but the tag is $RELEASE_TAG."
+            exit 1
+          fi
+          if [ "$engine_version" != "$version" ]; then
+            echo "::error::engine/local_tasks_bridge.py says __version__ = \"$engine_version\", but the tag is $RELEASE_TAG."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::$RELEASE_TAG points to a commit that is not on main."
+            exit 1
+          fi
+          /bin/bash .github/scripts/release-notes.sh "$version" CHANGELOG.md > "$RUNNER_TEMP/release-notes.md"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "Release $RELEASE_TAG: signing certificate ${HAVE_SIGNING_CERT}, notarization credentials ${HAVE_NOTARY_CREDENTIALS}"
+
+      - name: Show the toolchain
+        run: |
+          sw_vers
+          swiftc --version
+          /usr/bin/python3 --version
+
+      - name: Unit tests (macOS system Python)
+        run: make test PYTHON=/usr/bin/python3
+
+      - name: Fetch the embedded Python (arm64)
+        run: /bin/bash scripts/fetch-python.sh --arch arm64 --output build/python/arm64
+
+      - name: Unit tests (embedded Python)
+        run: make test PYTHON="$PWD/build/python/arm64/bin/python3"
+
+      - name: Installer and release gate self-tests
+        run: |
+          /bin/bash scripts/test-install.sh
+          /bin/bash scripts/test-release-source-gate.sh
+
+      - name: Import the signing certificate into a temporary keychain
+        if: env.HAVE_SIGNING_CERT == 'true'
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        run: |
+          keychain="$RUNNER_TEMP/ltb-signing.keychain-db"
+          certificate="$RUNNER_TEMP/ltb-signing.p12"
+          keychain_password="$(openssl rand -base64 32)"
+          echo "::add-mask::$keychain_password"
+          echo "LTB_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          (umask 077 && printf '%s' "$MACOS_CERTIFICATE_P12_BASE64" | base64 --decode > "$certificate")
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$certificate" -k "$keychain" -f pkcs12 -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security > /dev/null
+          rm -f "$certificate"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" > /dev/null
+          existing="$(security list-keychains -d user | sed -e 's/^[[:space:]]*"//' -e 's/"[[:space:]]*$//')"
+          # shellcheck disable=SC2086 # one keychain path per word
+          security list-keychains -d user -s "$keychain" $existing
+          identities="$(security find-identity -v -p codesigning "$keychain")"
+          case "$identities" in
+            *"$MACOS_SIGN_IDENTITY"*) echo "Signing identity is available." ;;
+            *) echo "::error::MACOS_SIGN_IDENTITY was not found in the imported certificate."; exit 1 ;;
+          esac
+
+      - name: Package arm64 and x86_64
+        env:
+          LTB_OAUTH_CLIENT_JSON: ${{ secrets.LTB_OAUTH_CLIENT_JSON }}
+          LTB_SIGN_IDENTITY: ${{ env.HAVE_SIGNING_CERT == 'true' && secrets.MACOS_SIGN_IDENTITY || '-' }}
+          LTB_NOTARIZE: ${{ env.HAVE_SIGNING_CERT == 'true' && env.HAVE_NOTARY_CREDENTIALS == 'true' && '1' || '0' }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: /bin/bash scripts/package-release.sh --arch all
+
+      - name: Install the arm64 release zip with install.sh (temporary HOME)
+        run: |
+          scratch="$(mktemp -d)"
+          mkdir -p "$scratch/home"
+          HOME="$scratch/home" /bin/bash ./install.sh --zip dist/LocalTasksBridge-macos-arm64.zip \
+            --dest "$scratch/Applications" --no-open --no-cli
+          rm -rf "$scratch"
+
+      - name: Summarize the build
+        run: |
+          {
+            echo "## Local Tasks Bridge $VERSION"
+            echo
+            echo '```json'
+            cat dist/release-manifest.json
+            echo '```'
+            echo
+            echo '```text'
+            cat dist/SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "::error::A release for $RELEASE_TAG already exists. Delete it (or release a new version) and run this workflow again."
+            exit 1
+          fi
+          # Upload everything to a draft first so nobody sees a half-uploaded release.
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
+            --title "Local Tasks Bridge $VERSION" \
+            --notes-file "$RUNNER_TEMP/release-notes.md" \
+            dist/LocalTasksBridge-macos-arm64.zip \
+            dist/LocalTasksBridge-macos-x86_64.zip \
+            dist/SHA256SUMS \
+            dist/release-manifest.json
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+
+      - name: Delete the temporary keychain
+        if: always() && env.LTB_KEYCHAIN != ''
+        run: security delete-keychain "$LTB_KEYCHAIN" || true

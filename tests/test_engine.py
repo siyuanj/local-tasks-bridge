@@ -518,8 +518,8 @@ class GoogleTasksDueTests(unittest.TestCase):
         )
 
         self.assertEqual(condition, "account_binding_required")
-        self.assertIn("안전 정지", headline)
-        self.assertIn("상태를 재구축", action)
+        self.assertIn("Sync stopped safely", headline)
+        self.assertIn("rebuild the sync map", action)
 
     def test_google_account_identity_is_display_only_and_uses_openid_scopes(self) -> None:
         response = mock.MagicMock()
@@ -2023,7 +2023,7 @@ class BlockedPlanAutoApprovalTests(unittest.TestCase):
             # The dialog is unavailable here (module guard), so the user gets
             # one pointer to the manager instead of a warning every cycle.
             self.assertEqual(notify.call_count, 1)
-            self.assertIn("Google Tasks 동기화 관리", notify.call_args.args[1])
+            self.assertIn("Review Pending Changes", notify.call_args.args[1])
 
     def test_streak_counts_only_identical_consecutive_fingerprints(self) -> None:
         fp, streak = sync.next_blocked_plan_streak("", 0, "aaa")
@@ -2710,7 +2710,7 @@ class MutationApprovalPromptTests(unittest.TestCase):
         return config
 
     @staticmethod
-    def deletion_plan(titles: list[str], list_title: str = "자격증", population: int | None = None) -> dict[str, object]:
+    def deletion_plan(titles: list[str], list_title: str = "Exams", population: int | None = None) -> dict[str, object]:
         return sync.build_mutation_plan(
             [
                 sync.planned_mutation(
@@ -2756,12 +2756,12 @@ class MutationApprovalPromptTests(unittest.TestCase):
                         sync.planned_mutation(
                             "google_tasks",
                             "delete",
-                            ["자격증", "tasklist", f"uid-{index}", f"task-{index}"],
+                            ["Exams", "tasklist", f"uid-{index}", f"task-{index}"],
                             destructive=True,
                         )
                         for index in range(2)
                     ],
-                    sync.planned_mutation("google_tasks", "update", ["자격증", "tasklist", "uid-9"]),
+                    sync.planned_mutation("google_tasks", "update", ["Exams", "tasklist", "uid-9"]),
                 ],
                 2,
             )
@@ -2832,7 +2832,7 @@ class MutationApprovalPromptTests(unittest.TestCase):
             # Cycle 1 lets the plan settle, cycle 2 asks, cycle 3 applies.
             self.assertEqual(passes, ["held", "held", "applied", "clean"])
             self.assertEqual(len(dialogs), 1)
-            self.assertIn("Google Tasks에서 삭제 (Apple에서 지워짐): 3건", dialogs[0])
+            self.assertIn("Delete in Google Tasks (deleted on this Mac): 3", dialogs[0])
             self.assertIn("Private exam plan", dialogs[0])
             status = sync.read_sync_status(config)
             self.assertEqual(status["state"], "ok")
@@ -2998,7 +2998,7 @@ class MutationApprovalPromptTests(unittest.TestCase):
         with mock.patch.object(sync.sys, "platform", "darwin"), mock.patch.object(
             sync.shutil, "which", return_value="/usr/bin/osascript"
         ), mock.patch.object(sync.subprocess, "Popen") as popen:
-            REAL_LAUNCH_MUTATION_APPROVAL_DIALOG("대량 변경 확인", text, 30)
+            REAL_LAUNCH_MUTATION_APPROVAL_DIALOG("Review a large change", text, 30)
 
         argv = popen.call_args.args[0]
         self.assertEqual(argv[:2], ["osascript", "-e"])
@@ -3006,7 +3006,7 @@ class MutationApprovalPromptTests(unittest.TestCase):
         self.assertIn(f'"${sync.MUTATION_APPROVAL_TEXT_ENV}"', argv[2].replace('\\"', '"'))
         # Titles in argv would be readable by every local user through ps.
         self.assertFalse(any("Private" in part for part in argv))
-        self.assertEqual(argv[3:], ["대량 변경 확인", "보류", "적용", "30"])
+        self.assertEqual(argv[3:], ["Review a large change", "Hold", "Apply", "30"])
         self.assertEqual(popen.call_args.kwargs["env"][sync.MUTATION_APPROVAL_TEXT_ENV], text)
         self.assertEqual(popen.call_args.kwargs["stdin"], sync.subprocess.DEVNULL)
 
@@ -3019,8 +3019,8 @@ class MutationApprovalPromptTests(unittest.TestCase):
             [
                 *[
                     sync.planned_mutation(
-                        "google_tasks", "delete", ["자격증", index], destructive=True,
-                        list_title="자격증", title=f"필기 {index}",
+                        "google_tasks", "delete", ["Exams", index], destructive=True,
+                        list_title="Exams", title=f"Written test {index}",
                     )
                     for index in range(5)
                 ],
@@ -3036,11 +3036,11 @@ class MutationApprovalPromptTests(unittest.TestCase):
         )
         text = sync.mutation_approval_dialog_text(sync.mutation_plan_review(plan), 21600, sample_limit=5)
 
-        self.assertIn("Google Tasks에서 삭제 (Apple에서 지워짐): 7건", text)
-        self.assertIn("자격증 5 · My 2", text)
+        self.assertIn("Delete in Google Tasks (deleted on this Mac): 7", text)
+        self.assertIn("Exams 5 · My 2", text)
         self.assertIn("[My] Errand 0", text)
-        self.assertIn("외 2건", text)
-        self.assertIn("6시간 뒤 다시 묻습니다", text)
+        self.assertIn("and 2 more", text)
+        self.assertIn("asks again in 6 hours", text)
 
     def management_config(self, base: Path) -> dict[str, object]:
         config = self.loop_config(base)
@@ -3139,8 +3139,8 @@ class MutationApprovalPromptTests(unittest.TestCase):
     def test_pending_plan_has_a_next_step_in_manager_and_doctor(self) -> None:
         condition, headline, action = sync.management_condition(self.management_snapshot())
         self.assertEqual(condition, "mutation_approval_pending")
-        self.assertIn("계속 동기화", headline)
-        self.assertIn("대량 변경 검토 후 적용", action)
+        self.assertIn("everything else keeps syncing", headline)
+        self.assertIn("Review Pending Changes", action)
 
         next_step = sync.doctor_next_step(
             config_exists=True,
@@ -3153,7 +3153,7 @@ class MutationApprovalPromptTests(unittest.TestCase):
             status_result="available",
             status_state="awaiting_mutation_approval",
         )
-        self.assertIn("approve", next_step)
+        self.assertIn("ltb approvals show", next_step)
         self.assertEqual(
             sync.pending_destructive_counts(
                 {

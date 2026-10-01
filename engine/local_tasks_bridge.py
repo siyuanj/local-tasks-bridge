@@ -3605,8 +3605,137 @@ def cmd_export(args: argparse.Namespace) -> None:
     print(json.dumps(reminders, indent=2, ensure_ascii=False, sort_keys=True))
 
 
+# --- Installation layout ----------------------------------------------------
+
+
+def launchctl_available() -> bool:
+    if os.environ.get("LTB_NO_LAUNCHCTL") == "1":
+        return False
+    return sys.platform == "darwin" and shutil.which("launchctl") is not None
+
+
+def launch_agents_dir() -> Path:
+    override = str(os.environ.get("LTB_LAUNCH_AGENTS_DIR") or "").strip()
+    return Path(override).expanduser() if override else Path.home() / "Library" / "LaunchAgents"
+
+
+def launch_agent_path() -> Path:
+    return launch_agents_dir() / f"{LAUNCH_AGENT_LABEL}.plist"
+
+
+def legacy_launch_agent_path() -> Path:
+    return launch_agents_dir() / f"{LEGACY_LAUNCH_AGENT_LABEL}.plist"
+
+
+def log_dir() -> Path:
+    override = str(os.environ.get("LTB_LOG_DIR") or "").strip()
+    return Path(override).expanduser() if override else Path.home() / "Library" / "Logs" / "LocalTasksBridge"
+
+
+def default_engine_log_path() -> Path:
+    return log_dir() / "engine.log"
+
+
+def app_bundle_of_engine(engine_dir: Path | None = None) -> Path | None:
+    """The .app this engine runs from (…/X.app/Contents/Resources/engine), if any."""
+
+    directory = (engine_dir or ENGINE_DIR).resolve()
+    parents = directory.parents
+    if (
+        directory.name == "engine"
+        and len(parents) >= 3
+        and parents[0].name == "Resources"
+        and parents[1].name == "Contents"
+        and parents[2].suffix == ".app"
+    ):
+        return parents[2]
+    return None
+
+
+def app_bundle_from_launch_agent(path: Path | None = None) -> Path | None:
+    """The .app the login item starts, read from its LaunchAgent plist."""
+
+    plist_path = path or launch_agent_path()
+    try:
+        payload = plistlib.loads(plist_path.read_bytes())
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        return None
+    arguments = payload.get("ProgramArguments") if isinstance(payload, dict) else None
+    if not isinstance(arguments, list) or not arguments:
+        return None
+    program = Path(str(arguments[0]))
+    for parent in program.parents:
+        if parent.suffix == ".app":
+            return parent
+    return None
+
+
+def running_from_installed_engine() -> bool:
+    """Whether this engine is the copy the background service runs.
+
+    Recovery actions refuse to run from a different copy (for example a
+    source checkout next to an installed app) so the two versions never
+    take turns on the same sync state.
+    """
+
+    installed = app_bundle_from_launch_agent()
+    if installed is None:
+        return True
+    current = app_bundle_of_engine()
+    try:
+        return current is not None and current.resolve() == installed.resolve()
+    except OSError:
+        return False
+
+
+def control_dir(config: dict[str, Any]) -> Path:
+    return expand_path(config.get("_config_path") or default_config_dir() / "config.json").parent
+
+
+def pause_flag_path(config: dict[str, Any]) -> Path:
+    return control_dir(config) / "paused"
+
+
+def sync_now_path(config: dict[str, Any]) -> Path:
+    return control_dir(config) / "sync-now"
+
+
+def loop_lock_path(config: dict[str, Any]) -> Path:
+    return control_dir(config) / "run-loop.lock"
+
+
+def sync_paused(config: dict[str, Any]) -> bool:
+    return pause_flag_path(config).exists()
+
+
+def touch_private_file(path: Path, content: str = "") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(content)
+    os.chmod(path, 0o600)
+
+
+def background_loop_running(config: dict[str, Any]) -> bool:
+    """True while some `run-loop` process holds the loop lock."""
+
+    path = loop_lock_path(config)
+    if not path.exists():
+        return False
+    try:
+        with path.open("a", encoding="utf-8") as handle:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        return False
+    return False
+
+
 def launch_agent_loaded() -> bool | None:
-    if sys.platform != "darwin" or not shutil.which("launchctl"):
+    if not launchctl_available():
         return None
     try:
         result = subprocess.run(
@@ -3652,44 +3781,81 @@ def doctor_next_step(
     status_state: str,
 ) -> str:
     if not config_exists:
-        return "Install a reviewed main release with setup-new-mac.sh; setup writes the private config."
-    if not swift_ready:
-        return "Install Xcode Command Line Tools, then rerun doctor."
-    if not helpers_ready or not runtime_ready:
-        return "Reinstall the reviewed main release before loading the LaunchAgent."
+        return tr(
+            "Open Local Tasks Bridge and complete the setup assistant (or run `ltb config init`).",
+            "请打开 Local Tasks Bridge 并完成设置向导（或运行 `ltb config init`）。",
+        )
+    if not swift_ready or not helpers_ready or not runtime_ready:
+        return tr(
+            "Reinstall Local Tasks Bridge; the Reminders helper programs are missing.",
+            "请重新安装 Local Tasks Bridge：缺少提醒事项辅助程序。",
+        )
     if status_state == "auth_prompt_open":
-        return "Complete the open Google browser authorization, then rerun doctor."
+        return tr(
+            "Finish the Google sign-in that is open in your browser, then check again.",
+            "请完成浏览器中正在进行的 Google 登录，然后再检查一次。",
+        )
     if not auth_material_ready or status_state in {"auth_required", "auth_timeout"}:
-        return "Run the stable runtime's gcloud-login command once, then rerun doctor."
-    if not launch_agent_installed:
-        return "Run reviewed setup to install the user LaunchAgent; do not point it at this checkout."
-    if agent_loaded is False:
-        return "Inspect the private error log, resolve the reported cause, then reload the user LaunchAgent."
-    if status_result == "unreadable":
-        return "Back up the private status file, repair its JSON, then rerun doctor."
-    if status_result == "missing":
-        return "Run a reviewed first dry-run with --no-delete-stale before enabling normal synchronization."
+        return tr(
+            "Sign in to Google again: choose \"Reconnect Google…\" in the app, or run `ltb auth`.",
+            "请重新登录 Google：在 App 中选择“重新连接 Google…”，或运行 `ltb auth`。",
+        )
+    if status_state == "account_binding_required":
+        return tr(
+            "The Apple or Google account changed. Run `ltb manage reconnect` (or Settings > Google > Reconnect): "
+            "it checks Google, backs up the private state, and rebuilds it with --no-delete-stale after you confirm.",
+            "Apple 或 Google 账号发生了变化。请运行 `ltb manage reconnect`（或在设置 > Google 中重新连接）："
+            "它会先检查 Google、备份私有状态，并在你确认后用 --no-delete-stale 安全重建。",
+        )
     if status_state == "awaiting_mutation_approval":
-        return (
+        return tr(
             "A large deletion/completion plan is waiting for your answer while other changes keep syncing. "
-            "Answer the on-screen prompt, or run the stable runtime's manage command and choose approve."
+            "Answer the on-screen prompt, or choose \"Review Pending Changes…\" (`ltb approvals show`).",
+            "有一批较多的删除/完成操作在等待你确认，其余改动仍在正常同步。请回答屏幕上的确认框，"
+            "或选择“查看待确认的更改…”（`ltb approvals show`）。",
         )
     if status_state == "blocked_mutation_plan":
-        return "Run the stable runtime's manage command and choose approve to review the plan, then apply or hold it."
-    if status_state == "account_binding_required":
-        return (
-            "Run the stable runtime's manage command and choose reconnect. "
-            "It will verify Google first, back up private state, and rebuild with --no-delete-stale only after confirmation."
+        return tr(
+            "Review the blocked plan with `ltb approvals show`, then apply or hold it.",
+            "请用 `ltb approvals show` 查看被拦下的计划，然后选择执行或暂缓。",
         )
     if status_state == "dry_run_ok":
-        return "Review the dry-run counts, then run the first live sync with --no-delete-stale before relying on scheduled synchronization."
+        return tr(
+            "Review the dry-run counts, then run the first live sync with --no-delete-stale "
+            "before relying on scheduled synchronization.",
+            "请先查看试运行的数量，再用 --no-delete-stale 执行第一次正式同步，之后再依赖后台定时同步。",
+        )
+    if status_result == "unreadable":
+        return tr(
+            "Back up the private status file, repair its JSON, then check again.",
+            "请先备份私有状态文件并修复其 JSON，然后再检查。",
+        )
+    if status_result == "missing":
+        return tr(
+            "Run a first dry-run with --no-delete-stale (the setup assistant does this for you).",
+            "请先用 --no-delete-stale 做一次试运行（设置向导会自动完成）。",
+        )
+    if status_state == "paused":
+        return tr("Sync is paused. Resume it from the menu bar or with `ltb resume`.", "同步已暂停。可在菜单栏或用 `ltb resume` 恢复。")
+    if agent_loaded is False:
+        return tr(
+            "Background sync is not running. Open Local Tasks Bridge (it starts at login once set up).",
+            "后台同步没有运行。请打开 Local Tasks Bridge（完成设置后会在登录时自动启动）。",
+        )
     if status_state == "failed":
-        return "Inspect the private error log and rerun doctor; stored error details are intentionally hidden here."
+        return tr(
+            "Check the private log (Open Logs in the app), fix the reported cause, then check again. "
+            "Stored error details are intentionally hidden here.",
+            "请查看私有日志（App 中“打开日志”），处理报错原因后再检查。此处有意不显示具体错误内容。",
+        )
     if status_state == "running":
-        return "Wait for the current cycle to finish, then rerun doctor."
+        return tr("Wait for the current cycle to finish, then check again.", "请等待当前这一轮同步结束后再检查。")
     if status_state in {"ok", "auth_refreshed"}:
-        return "No recovery action is currently indicated."
-    return "Review the private LaunchAgent log and rerun doctor after the next scheduled cycle."
+        return tr("No action needed.", "无需任何操作。")
+    return tr(
+        "Check the private log and look again after the next scheduled cycle.",
+        "请查看私有日志，并在下一轮定时同步后再检查。",
+    )
 
 
 def run_online_doctor_checks(config: dict[str, Any]) -> None:
@@ -3876,35 +4042,52 @@ class ManagementActionError(RuntimeError):
     pass
 
 
+def setup_completed(config: dict[str, Any], status: dict[str, Any] | None = None) -> bool:
+    if config.get("setup_completed_at"):
+        return True
+    return bool((status or {}).get("last_success_at"))
+
+
 def collect_management_snapshot(config: dict[str, Any]) -> dict[str, Any]:
     config_exists = expand_path(config["_config_path"]).is_file()
-    runtime_current = Path.home() / ".local/share" / APP_NAME / "current"
-    stable_entrypoint = runtime_current / Path(__file__).name
-    runtime_ready = runtime_current.is_symlink() and stable_entrypoint.is_file()
-    running_from_stable_runtime = runtime_ready and Path(__file__).resolve() == stable_entrypoint.resolve()
-    launch_agent_path = Path.home() / "Library/LaunchAgents" / f"{LAUNCH_AGENT_LABEL}.plist"
+    helpers_ready = True
+    try:
+        resolve_reminders_helper(config, "export")
+        resolve_reminders_helper(config, "apply")
+    except RemindersUnavailable:
+        helpers_ready = False
     status_result, status = local_status_snapshot(config)
     raw_state = str(status.get("state") or "unknown")
     try:
         failure_count = max(0, int(status.get("consecutive_failures") or 0))
     except (TypeError, ValueError):
         failure_count = 0
+    client = oauth_client_status(config)
+    agent_path = launch_agent_path()
     return {
         "config_exists": config_exists,
-        "swift_ready": shutil.which("swift") is not None,
-        "helpers_ready": expand_path(config["reminders_exporter_path"]).is_file()
-        and expand_path(config["reminders_apply_path"]).is_file(),
-        "oauth_client_ready": expand_path(config["credentials_path"]).is_file(),
-        "auth_material_ready": expand_path(config["adc_credentials_path"]).is_file()
-        or expand_path(config["token_path"]).is_file(),
-        "runtime_ready": runtime_ready,
-        "running_from_stable_runtime": running_from_stable_runtime,
-        "launch_agent_path": launch_agent_path,
-        "launch_agent_installed": launch_agent_path.is_file(),
-        "agent_loaded": launch_agent_loaded(),
+        "setup_completed": setup_completed(config, status),
+        "swift_ready": helpers_ready,
+        "helpers_ready": helpers_ready,
+        "oauth_client_ready": client["active"] != "missing",
+        "oauth_client": client,
+        "auth_material_ready": expand_path(config["token_path"]).is_file()
+        or (bool(config.get("use_adc")) and expand_path(config["adc_credentials_path"]).is_file()),
+        "runtime_ready": helpers_ready and Path(__file__).is_file(),
+        "running_from_stable_runtime": running_from_installed_engine(),
+        "control_dir": str(control_dir(config)),
+        "launch_agent_path": agent_path,
+        "launch_agent_installed": agent_path.is_file(),
+        "launch_agent_loaded": launch_agent_loaded(),
+        # "agent_loaded" means "the background sync loop is running", whether
+        # the menu bar app or a command-line run-loop hosts it.
+        "agent_loaded": background_loop_running(config),
+        "paused": sync_paused(config),
         "status_result": status_result,
         "status_state": raw_state if raw_state in KNOWN_STATUS_STATES else "unknown",
         "last_success_at": status.get("last_success_at"),
+        "last_start_at": status.get("last_start_at"),
+        "last_end_at": status.get("last_end_at"),
         "updated_at": status.get("updated_at"),
         "failure_count": failure_count,
         "pending_destructive_counts": pending_destructive_counts(status),
@@ -3929,102 +4112,169 @@ def pending_destructive_counts(status: dict[str, Any]) -> dict[str, int]:
 
 
 def management_condition(snapshot: dict[str, Any]) -> tuple[str, str, str]:
+    """(condition code, headline, recommended action) for people and the app."""
+
     if not snapshot["config_exists"] or not snapshot["runtime_ready"] or not snapshot["helpers_ready"]:
         return (
             "setup_required",
-            "설치 또는 실행 파일이 완전하지 않습니다.",
-            "검토된 main 릴리스를 setup-new-mac.sh로 다시 설치하세요.",
+            tr("Setup is not complete.", "尚未完成设置。"),
+            tr(
+                "Open Local Tasks Bridge and finish the setup assistant.",
+                "请打开 Local Tasks Bridge 并完成设置向导。",
+            ),
         )
     state = str(snapshot["status_state"])
     if state == "account_binding_required":
         return (
             "account_binding_required",
-            "Apple/Google 계정 연결 기준이 달라져 동기화가 안전 정지되었습니다.",
-            "'Google 연결 복구'를 선택하면 백업 후 삭제 전파 없이 상태를 재구축할 수 있습니다.",
+            tr(
+                "Sync stopped safely because the Apple or Google account changed.",
+                "检测到 Apple 或 Google 账号发生变化，同步已安全停止。",
+            ),
+            tr(
+                "Choose \"Reconnect Google\" to back up and rebuild the sync map without propagating deletions.",
+                "请选择“重新连接 Google”：会先备份，再在不传播删除的前提下重建同步对应关系。",
+            ),
         )
     if state in {"auth_required", "auth_timeout"} or not snapshot["auth_material_ready"]:
         return (
             "auth_required",
-            "Google 로그인이 만료되었거나 인증 파일을 사용할 수 없습니다.",
-            "'Google 연결 복구'를 선택해 브라우저 로그인을 완료하세요.",
+            tr(
+                "Google sign-in has expired or is missing.",
+                "Google 登录已过期或尚未登录。",
+            ),
+            tr(
+                "Choose \"Reconnect Google\" and finish signing in in the browser.",
+                "请选择“重新连接 Google”，并在浏览器中完成登录。",
+            ),
         )
     if state == "awaiting_mutation_approval":
         return (
             "mutation_approval_pending",
-            "대량 완료·삭제 변경이 확인을 기다립니다. 그 밖의 변경은 계속 동기화됩니다.",
-            "화면의 확인 창에서 답하거나 '대량 변경 검토 후 적용'을 선택하세요.",
+            tr(
+                "A large batch of deletions/completions is waiting for your review; everything else keeps syncing.",
+                "有一批较多的删除/完成操作在等待你确认；其余改动仍在继续同步。",
+            ),
+            tr(
+                "Answer the on-screen prompt, or choose \"Review Pending Changes\".",
+                "请回答屏幕上的确认框，或选择“查看待确认的更改”。",
+            ),
         )
     if state == "blocked_mutation_plan":
         return (
             "mutation_blocked",
-            "대량 완료·삭제 계획이 안전 기준을 넘어 확인이 필요합니다.",
-            "'대량 변경 검토 후 적용'을 선택해 목록을 확인한 뒤 적용하거나 보류하세요.",
+            tr(
+                "A large batch of deletions/completions exceeded the safety limit and needs review.",
+                "一批删除/完成操作超过了安全上限，需要你确认。",
+            ),
+            tr(
+                "Choose \"Review Pending Changes\" to see the items, then apply or hold them.",
+                "请选择“查看待确认的更改”查看具体条目，再决定执行或暂缓。",
+            ),
         )
-    if snapshot["agent_loaded"] is False:
+    if snapshot.get("paused"):
+        return (
+            "paused",
+            tr("Sync is paused.", "同步已暂停。"),
+            tr("Choose \"Resume Sync\" when you are ready.", "需要时请选择“恢复同步”。"),
+        )
+    if snapshot["agent_loaded"] is False and snapshot.get("setup_completed", True):
         return (
             "agent_stopped",
-            "백그라운드 동기화가 실행 중이 아닙니다.",
-            "원인을 해결한 뒤 '백그라운드 다시 시작'을 선택하세요.",
+            tr("Background sync is not running.", "后台同步没有在运行。"),
+            tr(
+                "Open Local Tasks Bridge; it keeps syncing in the menu bar and starts at login.",
+                "请打开 Local Tasks Bridge；它会在菜单栏持续同步，并在登录时自动启动。",
+            ),
         )
     if snapshot["status_result"] == "missing":
         return (
-            "first_sync_required",
-            "아직 동기화 결과가 없습니다.",
-            "'Google 연결 복구'에서 삭제 전파 없는 첫 동기화를 진행하세요.",
+            "never_synced",
+            tr("Nothing has been synced yet.", "还没有进行过同步。"),
+            tr(
+                "Run the first safe sync from the setup assistant (no deletions are propagated).",
+                "请在设置向导中完成第一次安全同步（不会传播任何删除）。",
+            ),
         )
     if snapshot["status_result"] == "unreadable":
         return (
-            "status_invalid",
-            "상태 파일을 읽을 수 없습니다.",
-            "비공개 상태 파일을 백업한 뒤 검토된 릴리스를 다시 설치하세요.",
+            "status_unreadable",
+            tr("The status file cannot be read.", "无法读取状态文件。"),
+            tr(
+                "Back up the private status file; it is rewritten after the next sync.",
+                "请备份私有状态文件；下一次同步后会重新生成。",
+            ),
         )
     if state == "failed":
         return (
             "failed",
-            "최근 동기화가 실패했습니다.",
-            "Google 연결 확인 후 비공개 로그에서 원인을 확인하세요.",
+            tr("The last sync failed.", "最近一次同步失败。"),
+            tr(
+                "Check the Google connection, then look at the private log for the cause.",
+                "请检查 Google 连接，再在私有日志中查看原因。",
+            ),
         )
     if state == "running":
-        return ("running", "지금 동기화가 진행 중입니다.", "잠시 뒤 상태를 다시 확인하세요.")
+        return ("running", tr("Syncing now…", "正在同步…"), tr("Check again in a moment.", "请稍后再查看。"))
     if state == "ok":
-        return ("healthy", "Apple 미리 알림과 Google Tasks 동기화가 정상입니다.", "현재 필요한 조치는 없습니다.")
+        return (
+            "healthy",
+            tr("Apple Reminders and Google Tasks are in sync.", "Apple 提醒事项与 Google Tasks 已同步。"),
+            tr("No action needed.", "无需任何操作。"),
+        )
     if state in {"dry_run_ok", "auth_refreshed"}:
         return (
             "attention",
-            "연결 또는 안전 점검은 끝났지만 정상 동기화 완료를 아직 확인하지 못했습니다.",
-            "'Google 연결 복구'를 계속 진행하거나 다음 자동 동기화 후 다시 확인하세요.",
+            tr(
+                "Checks passed, but no full sync has completed since.",
+                "检查已通过，但之后还没有完成一次完整同步。",
+            ),
+            tr(
+                "Finish the first sync, or check again after the next scheduled cycle.",
+                "请完成第一次同步，或等下一轮定时同步后再查看。",
+            ),
         )
-    return ("unknown", "현재 상태를 하나로 확정할 수 없습니다.", "Google 연결 확인을 실행해 범위를 좁히세요.")
+    return (
+        "unknown",
+        tr("The current state is unclear.", "当前状态无法确定。"),
+        tr("Run \"Check Google connection\" to narrow it down.", "请运行“检查 Google 连接”进一步定位。"),
+    )
 
 
 def management_local_time(value: Any) -> str:
     parsed = parse_status_time(value)
     if not parsed:
-        return "기록 없음"
+        return tr("never", "无记录")
     return parsed.astimezone().isoformat(timespec="seconds")
+
+
+def yes_no(value: bool, yes_en: str, yes_zh: str, no_en: str, no_zh: str) -> str:
+    return tr(yes_en, yes_zh) if value else tr(no_en, no_zh)
 
 
 def print_management_summary(config: dict[str, Any]) -> dict[str, Any]:
     snapshot = collect_management_snapshot(config)
     condition, headline, action = management_condition(snapshot)
-    print("\nGoogle Tasks 동기화 관리")
-    print("=" * 32)
-    print(f"판정: {headline}")
-    print(f"상태 코드: {condition}")
-    print(f"최근 성공: {management_local_time(snapshot['last_success_at'])}")
-    print(f"연속 실패: {snapshot['failure_count']}회")
-    if snapshot["agent_loaded"] is None:
-        print("백그라운드: 이 환경에서는 확인할 수 없음")
-    else:
-        print(f"백그라운드: {'실행 중' if snapshot['agent_loaded'] else '중지됨'}")
-    print(f"Google 인증 파일: {'준비됨' if snapshot['auth_material_ready'] else '없음'}")
+    print("\n" + tr("Local Tasks Bridge — sync manager", "Local Tasks Bridge — 同步管理"))
+    print("=" * 40)
+    print(tr(f"Status: {headline}", f"状态：{headline}"))
+    print(tr(f"Condition code: {condition}", f"状态代码：{condition}"))
+    print(tr(
+        f"Last successful sync: {management_local_time(snapshot['last_success_at'])}",
+        f"最近成功同步：{management_local_time(snapshot['last_success_at'])}",
+    ))
+    print(tr(f"Consecutive failures: {snapshot['failure_count']}", f"连续失败次数：{snapshot['failure_count']}"))
+    print(tr("Background sync: ", "后台同步：") + yes_no(bool(snapshot["agent_loaded"]), "running", "运行中", "stopped", "已停止"))
+    if snapshot.get("paused"):
+        print(tr("Paused: yes", "已暂停：是"))
+    print(tr("Google sign-in: ", "Google 登录：") + yes_no(bool(snapshot["auth_material_ready"]), "ready", "已就绪", "missing", "缺失"))
     pending = snapshot.get("pending_destructive_counts") or {}
     if pending:
         print(
-            "대기 중인 대량 변경: "
-            + ", ".join(f"{mutation_review_label(key)} {count}건" for key, count in pending.items())
+            tr("Pending large changes: ", "待确认的大批量更改：")
+            + ", ".join(f"{mutation_review_label(key)} × {count}" for key, count in pending.items())
         )
-    print(f"권장 조치: {action}")
+    print(tr(f"Recommended: {action}", f"建议操作：{action}"))
     return snapshot
 
 
@@ -4035,7 +4285,7 @@ def management_confirm(args: argparse.Namespace, prompt: str) -> bool:
         answer = input(f"{prompt} [y/N] ").strip().lower()
     except EOFError:
         return False
-    return answer in {"y", "yes"}
+    return answer in {"y", "yes", "是", "好"}
 
 
 def backup_management_files(config: dict[str, Any], reason: str) -> Path:
@@ -4047,6 +4297,7 @@ def backup_management_files(config: dict[str, Any], reason: str) -> Path:
     stamp = dt.datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
     backup_dir = backup_root / f"{stamp}-{reason}-{os.getpid()}"
     backup_dir.mkdir(parents=True, mode=0o700)
+    os.chmod(backup_root, 0o700)
     os.chmod(backup_dir, 0o700)
 
     private_paths = {
@@ -4067,42 +4318,50 @@ def backup_management_files(config: dict[str, Any], reason: str) -> Path:
         copied += 1
     if copied == 0:
         backup_dir.rmdir()
-        raise ManagementActionError("백업할 비공개 설정이나 상태 파일을 찾지 못했습니다.")
+        raise ManagementActionError(
+            tr("No private settings or state files were found to back up.", "没有找到可以备份的私有设置或状态文件。")
+        )
     return backup_dir
 
 
+MANAGEMENT_PAUSE_MARKER = "held-by-manager"
+
+
 def stop_management_agent(snapshot: dict[str, Any]) -> bool:
-    was_loaded = snapshot["agent_loaded"] is True
-    if not was_loaded:
+    """Hold the background loop during a manual operation.
+
+    Returns True when this call placed the hold, so the caller knows to
+    release it. A pause the person set themselves is left alone.
+    """
+
+    config_dir = Path(snapshot.get("control_dir") or "")
+    if not str(config_dir) or not config_dir.is_dir():
         return False
-    if sys.platform != "darwin" or not shutil.which("launchctl"):
-        raise ManagementActionError("이 환경에서는 macOS 백그라운드 작업을 중지할 수 없습니다.")
-    result = subprocess.run(
-        ["launchctl", "bootout", f"gui/{os.getuid()}", str(snapshot["launch_agent_path"])],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-        timeout=15,
-    )
-    if result.returncode != 0 and launch_agent_loaded() is not False:
-        raise ManagementActionError("백그라운드 동기화를 안전하게 중지하지 못했습니다.")
+    flag = config_dir / "paused"
+    if flag.exists():
+        return False
+    touch_private_file(flag, MANAGEMENT_PAUSE_MARKER)
     return True
 
 
 def start_management_agent(snapshot: dict[str, Any]) -> None:
-    if not snapshot["launch_agent_installed"]:
-        raise ManagementActionError("LaunchAgent 파일이 없습니다. 검토된 릴리스를 다시 설치하세요.")
-    if sys.platform != "darwin" or not shutil.which("launchctl"):
-        raise ManagementActionError("이 환경에서는 macOS 백그라운드 작업을 시작할 수 없습니다.")
-    result = subprocess.run(
-        ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(snapshot["launch_agent_path"])],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-        timeout=15,
-    )
-    if result.returncode != 0 or launch_agent_loaded() is not True:
-        raise ManagementActionError("백그라운드 동기화를 다시 시작하지 못했습니다.")
+    """Release a hold placed by stop_management_agent and wake the loop."""
+
+    config_dir = Path(snapshot.get("control_dir") or "")
+    if not str(config_dir):
+        return
+    flag = config_dir / "paused"
+    try:
+        if flag.read_text(encoding="utf-8").strip() == MANAGEMENT_PAUSE_MARKER:
+            flag.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise ManagementActionError(
+            tr("Could not resume background sync.", "无法恢复后台同步。")
+        ) from exc
+    with contextlib.suppress(OSError):
+        touch_private_file(config_dir / "sync-now")
 
 
 def run_management_safe_sync(config: dict[str, Any], *, dry_run: bool) -> None:
@@ -4113,7 +4372,9 @@ def run_management_safe_sync(config: dict[str, Any], *, dry_run: bool) -> None:
     safe_config["auto_reauth_browser"] = False
     with sync_lock(safe_config, wait=True) as acquired:
         if not acquired:
-            raise ManagementActionError("다른 동기화가 실행 중입니다. 잠시 뒤 다시 시도하세요.")
+            raise ManagementActionError(
+                tr("Another sync is running. Try again in a moment.", "另一轮同步正在进行，请稍后再试。")
+            )
         write_sync_status(
             safe_config,
             {"state": "running", "last_start_at": utc_now_text(), "last_error": "", "mutation_plan": None},
@@ -4157,14 +4418,14 @@ def reminders_account_titles(config: dict[str, Any]) -> list[str]:
 
 
 def authorize_google_for_management(config: dict[str, Any], args: argparse.Namespace) -> None:
-    if shutil.which("gcloud"):
+    if config.get("use_adc") and shutil.which("gcloud"):
         try:
             cmd_gcloud_login(argparse.Namespace(config=config["_config_path"], adc_credentials_path=None))
             return
         except SystemExit as exc:
-            print(f"gcloud 로그인에 실패했습니다: {exc}")
-            if not management_confirm(args, "브라우저 직접 로그인을 대신 시도할까요?"):
-                raise ManagementActionError("Google 로그인이 완료되지 않았습니다.") from exc
+            print(tr(f"gcloud sign-in failed: {exc}", f"gcloud 登录失败：{exc}"))
+            if not management_confirm(args, tr("Sign in directly in the browser instead?", "改为直接在浏览器中登录吗？")):
+                raise ManagementActionError(tr("Google sign-in was not completed.", "Google 登录未完成。")) from exc
     cmd_auth(argparse.Namespace(config=config["_config_path"], credentials_path=None))
 
 
@@ -4174,7 +4435,12 @@ def archive_state_for_rebuild(config: dict[str, Any], backup_dir: Path) -> bool:
         return False
     destination = backup_dir / "state.active-before-rebuild.json"
     if destination.exists():
-        raise ManagementActionError("상태 백업 대상이 이미 있어 기존 상태를 이동하지 않았습니다.")
+        raise ManagementActionError(
+            tr(
+                "A state backup with the same name already exists; the current state was not moved.",
+                "已存在同名的状态备份，因此没有移动当前状态。",
+            )
+        )
     state_path.replace(destination)
     os.chmod(destination, 0o600)
     return True
@@ -4186,12 +4452,27 @@ def google_account_display(result: dict[str, Any]) -> str:
         return email
     fingerprint = str(result.get("account_fingerprint") or "").strip()
     if fingerprint:
-        return f"비공개 식별자 {fingerprint}"
-    return "확인할 수 없음"
+        return tr(f"private ID {fingerprint}", f"私有标识 {fingerprint}")
+    return tr("unknown", "无法确定")
+
+
+def google_connection_line(result: dict[str, Any], *, reconnected: bool = False) -> str:
+    account = google_account_display(result)
+    count = int(result.get("tasklist_count") or 0)
+    if reconnected:
+        return tr(
+            f"Google reconnected: OK ({account}, {count} task lists found)",
+            f"Google 已重新连接：正常（{account}，找到 {count} 个任务清单）",
+        )
+    return tr(
+        f"Google connection: OK ({account}, {count} task lists found)",
+        f"Google 连接：正常（{account}，找到 {count} 个任务清单）",
+    )
 
 
 def management_reconnect(config: dict[str, Any], args: argparse.Namespace) -> None:
     snapshot = print_management_summary(config)
+    snapshot.setdefault("control_dir", str(control_dir(config)))
     if not all(
         [
             snapshot["config_exists"],
@@ -4199,19 +4480,26 @@ def management_reconnect(config: dict[str, Any], args: argparse.Namespace) -> No
             snapshot["running_from_stable_runtime"],
             snapshot["helpers_ready"],
             snapshot["oauth_client_ready"],
-            snapshot["launch_agent_installed"],
         ]
     ):
-        raise ManagementActionError("재연결 전에 검토된 main 릴리스를 다시 설치해야 합니다.")
+        raise ManagementActionError(
+            tr(
+                "Run this from the installed Local Tasks Bridge (its `ltb` command) after setup is complete.",
+                "请在完成设置后，使用已安装的 Local Tasks Bridge（其自带的 `ltb` 命令）执行此操作。",
+            )
+        )
     if not management_confirm(
         args,
-        "비공개 상태를 백업하고 백그라운드 동기화를 잠시 멈춘 뒤 연결 복구를 시작할까요?",
+        tr(
+            "Back up the private state, hold background sync, and start reconnecting?",
+            "要先备份私有状态、暂停后台同步，然后开始重新连接吗？",
+        ),
     ):
-        print("변경 없이 취소했습니다.")
+        print(tr("Cancelled; nothing was changed.", "已取消，没有做任何更改。"))
         return
 
     backup_dir = backup_management_files(config, "reconnect")
-    print(f"비공개 백업 완료: {backup_dir}")
+    print(tr(f"Private backup saved: {backup_dir}", f"已保存私有备份：{backup_dir}"))
     was_loaded = stop_management_agent(snapshot)
     state_path = expand_path(config["state_path"])
     state_existed = state_path.is_file()
@@ -4221,84 +4509,155 @@ def management_reconnect(config: dict[str, Any], args: argparse.Namespace) -> No
     try:
         online = check_google_connection(config)
         if online["state"] == "ok":
-            print(
-                f"Google 연결: 정상 ({google_account_display(online)}, "
-                f"Tasks 목록 {online['tasklist_count']}개 확인)"
-            )
+            print(google_connection_line(online))
         elif online["state"] == "auth_required":
-            print("Google 로그인이 필요합니다. 브라우저 인증을 시작합니다.")
+            print(tr("Google sign-in is required. Opening the browser.", "需要登录 Google，正在打开浏览器。"))
             authorize_google_for_management(config, args)
             online = check_google_connection(config)
             if online["state"] != "ok":
-                raise ManagementActionError(f"재로그인 후에도 Google 연결을 확인하지 못했습니다: {online['message']}")
-            print(
-                f"Google 재연결: 정상 ({google_account_display(online)}, "
-                f"Tasks 목록 {online['tasklist_count']}개 확인)"
-            )
+                raise ManagementActionError(
+                    tr(
+                        f"Google still could not be verified after signing in: {online['message']}",
+                        f"重新登录后仍无法确认 Google 连接：{online['message']}",
+                    )
+                )
+            print(google_connection_line(online, reconnected=True))
         else:
             raise ManagementActionError(
-                f"네트워크 또는 Google 일시 장애로 연결을 판정하지 못했습니다. 나중에 다시 시도하세요: {online['message']}"
+                tr(
+                    f"The network or Google is temporarily unavailable; try again later: {online['message']}",
+                    f"网络或 Google 暂时不可用，请稍后再试：{online['message']}",
+                )
             )
 
-        print("\n삭제·완료 전파를 끈 안전 dry-run을 실행합니다.")
+        print("\n" + tr(
+            "Running a safe dry-run with deletion and completion propagation turned off.",
+            "正在进行安全试运行（已关闭删除与完成的传播）。",
+        ))
         try:
             run_management_safe_sync(config, dry_run=True)
         except AccountBindingRequired:
             if not online.get("account_email"):
-                print("현재 Google 자격 증명에는 계정 확인 권한이 없어 안전하게 계정을 식별할 수 없습니다.")
-                print("계정 식별 권한을 포함해 Google 로그인을 한 번 갱신합니다.")
+                print(tr(
+                    "The current Google sign-in cannot identify the account safely.",
+                    "当前的 Google 登录无法安全地识别账号。",
+                ))
+                print(tr("Signing in once more, including account identity.", "将重新登录一次，并包含账号身份信息。"))
                 authorize_google_for_management(config, args)
                 online = check_google_connection(config)
                 if online["state"] != "ok" or not online.get("account_email"):
-                    raise ManagementActionError("Google 계정을 식별하지 못해 상태 재구축을 중단합니다.")
+                    raise ManagementActionError(
+                        tr(
+                            "The Google account could not be identified; the rebuild was stopped.",
+                            "无法识别 Google 账号，已停止重建。",
+                        )
+                    )
             account_titles = reminders_account_titles(config)
-            print("\nGoogle 인증은 정상이지만 저장된 계정 연결 기준과 현재 계정 기준이 다릅니다.")
-            print(f"현재 Apple 미리 알림 계정: {', '.join(account_titles) if account_titles else '확인할 수 없음'}")
-            print(f"현재 Google 계정: {google_account_display(online)}")
-            print("기존 상태는 이미 비공개 백업에 보존되어 있습니다.")
+            print("\n" + tr(
+                "Google sign-in works, but the accounts differ from the ones the sync map belongs to.",
+                "Google 登录正常，但当前账号与同步对应关系所属的账号不一致。",
+            ))
+            accounts = ", ".join(account_titles) if account_titles else tr("unknown", "无法确定")
+            print(tr(f"Apple Reminders accounts now: {accounts}", f"当前 Apple 提醒事项账号：{accounts}"))
+            print(tr(f"Google account now: {google_account_display(online)}", f"当前 Google 账号：{google_account_display(online)}"))
+            print(tr("The previous state is already preserved in the private backup.", "之前的状态已保存在私有备份中。"))
             if not management_confirm(
                 args,
-                "표시된 Apple 계정과 방금 확인한 Google 계정이 의도한 조합이라면 상태 맵을 안전하게 재구축할까요?",
+                tr(
+                    "If these are the accounts you intend to pair, rebuild the sync map safely?",
+                    "如果这就是你想要配对的账号组合，要安全地重建同步对应关系吗？",
+                ),
             ):
-                raise ManagementActionError("계정 확인이 취소되어 백그라운드 동기화를 중지 상태로 유지합니다.")
+                raise ManagementActionError(
+                    tr(
+                        "Account confirmation was cancelled; background sync stays on hold.",
+                        "已取消账号确认，后台同步保持暂停。",
+                    )
+                )
             state_archived = archive_state_for_rebuild(config, backup_dir)
-            print("기존 활성 상태를 백업으로 옮겼습니다. Google/Apple 항목은 삭제하지 않았습니다.")
+            print(tr(
+                "Moved the active state into the backup. No Google or Apple items were deleted.",
+                "已把当前状态移入备份。没有删除任何 Google 或 Apple 条目。",
+            ))
             run_management_safe_sync(config, dry_run=True)
 
         needs_live_rebuild = state_archived or not state_existed
         if needs_live_rebuild:
-            print("\n위 dry-run 결과는 삭제·완료 전파가 모두 차단된 재구축 계획입니다.")
-            if not management_confirm(args, "이 계획으로 새 상태 맵을 저장할까요?"):
-                raise ManagementActionError("새 상태 맵 저장이 취소되어 백그라운드 동기화를 중지 상태로 유지합니다.")
+            print("\n" + tr(
+                "The dry-run above is a rebuild plan with deletion and completion propagation blocked.",
+                "上面的试运行是一份已禁止删除和完成传播的重建计划。",
+            ))
+            if not management_confirm(args, tr("Save a new sync map from this plan?", "要按这份计划保存新的同步对应关系吗？")):
+                raise ManagementActionError(
+                    tr(
+                        "Saving the new sync map was cancelled; background sync stays on hold.",
+                        "已取消保存新的同步对应关系，后台同步保持暂停。",
+                    )
+                )
             run_management_safe_sync(config, dry_run=False)
 
         start_management_agent(snapshot)
         completed = True
-        print("\n복구 완료: Google 연결과 안전 동기화를 확인했고 백그라운드 작업을 다시 시작했습니다.")
+        print("\n" + tr(
+            "Done: Google and a safe sync were verified, and background sync resumed.",
+            "完成：已确认 Google 连接与安全同步，后台同步已恢复。",
+        ))
         print_management_summary(config)
     finally:
         if not completed and was_loaded and not state_archived:
             try:
                 start_management_agent(snapshot)
-                print("기존 활성 상태는 바꾸지 않았고 백그라운드 작업을 원래대로 다시 시작했습니다.")
+                print(tr(
+                    "The active state was not changed and background sync resumed.",
+                    "当前状态没有改变，后台同步已恢复。",
+                ))
             except ManagementActionError:
-                print("주의: 백그라운드 작업을 자동으로 복원하지 못했습니다.")
+                print(tr("Warning: background sync could not be resumed automatically.", "注意：无法自动恢复后台同步。"))
 
 
 def management_restart(config: dict[str, Any], args: argparse.Namespace) -> None:
     snapshot = print_management_summary(config)
     if not snapshot["running_from_stable_runtime"]:
-        raise ManagementActionError("재시작은 설치된 안정 실행 릴리스의 관리 도구에서만 허용됩니다.")
+        raise ManagementActionError(
+            tr(
+                "Restart from the installed Local Tasks Bridge (its `ltb` command).",
+                "请使用已安装的 Local Tasks Bridge（其自带的 `ltb` 命令）重新启动。",
+            )
+        )
     condition = management_condition(snapshot)[0]
     if condition in {"account_binding_required", "auth_required"}:
-        raise ManagementActionError("원인을 해결하지 않은 재시작은 도움이 되지 않습니다. 먼저 'Google 연결 복구'를 실행하세요.")
-    if not management_confirm(args, "백그라운드 동기화를 다시 시작할까요?"):
-        print("변경 없이 취소했습니다.")
+        raise ManagementActionError(
+            tr(
+                "Restarting will not help until the cause is fixed. Run \"Reconnect Google\" first.",
+                "在解决根本原因之前重启没有帮助。请先运行“重新连接 Google”。",
+            )
+        )
+    if not management_confirm(args, tr("Restart background sync?", "要重新启动后台同步吗？")):
+        print(tr("Cancelled; nothing was changed.", "已取消，没有做任何更改。"))
         return
-    if snapshot["agent_loaded"] is True:
-        stop_management_agent(snapshot)
-    start_management_agent(snapshot)
-    print("백그라운드 동기화를 다시 시작했습니다.")
+    flag = pause_flag_path(config)
+    with contextlib.suppress(FileNotFoundError):
+        flag.unlink()
+    if snapshot["launch_agent_installed"] and launchctl_available():
+        result = subprocess.run(
+            ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{LAUNCH_AGENT_LABEL}"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=15,
+        )
+        if result.returncode != 0:
+            raise ManagementActionError(tr("Could not restart background sync.", "无法重新启动后台同步。"))
+        print(tr("Background sync restarted.", "后台同步已重新启动。"))
+        return
+    touch_private_file(sync_now_path(config))
+    if background_loop_running(config):
+        print(tr("Background sync resumed.", "后台同步已恢复。"))
+    else:
+        print(tr(
+            "Background sync is not running here. Open Local Tasks Bridge to start it.",
+            "这里没有运行后台同步。请打开 Local Tasks Bridge 来启动它。",
+        ))
 
 
 def preview_mutation_plan(config: dict[str, Any]) -> dict[str, Any] | None:
@@ -4367,27 +4726,51 @@ def run_management_sync(config: dict[str, Any], *, destructive_approval: str) ->
 def management_approve(config: dict[str, Any], args: argparse.Namespace) -> None:
     """Review a blocked bulk change in Terminal, then apply it or hold it."""
     snapshot = print_management_summary(config)
+    snapshot.setdefault("control_dir", str(control_dir(config)))
     if not snapshot["running_from_stable_runtime"]:
-        raise ManagementActionError("대량 변경 적용은 설치된 안정 실행 릴리스의 관리 도구에서만 허용됩니다.")
+        raise ManagementActionError(
+            tr(
+                "Apply large changes from the installed Local Tasks Bridge (its `ltb` command).",
+                "请使用已安装的 Local Tasks Bridge（其自带的 `ltb` 命令）来执行大批量更改。",
+            )
+        )
     condition = management_condition(snapshot)[0]
     if condition == "setup_required":
-        raise ManagementActionError("검토된 main 릴리스를 setup-new-mac.sh로 다시 설치한 뒤 시도하세요.")
+        raise ManagementActionError(
+            tr("Finish the setup assistant first.", "请先完成设置向导。")
+        )
     if condition in {"account_binding_required", "auth_required"}:
-        raise ManagementActionError("먼저 'Google 연결 복구'로 연결 문제를 해결하세요.")
+        raise ManagementActionError(
+            tr("Fix the Google connection first with \"Reconnect Google\".", "请先用“重新连接 Google”修复 Google 连接。")
+        )
 
-    print("\n백그라운드 동기화를 잠시 멈추고 다음 동기화 계획을 계산합니다. 아직 아무것도 바꾸지 않습니다.")
+    print("\n" + tr(
+        "Holding background sync and computing the next plan. Nothing is changed yet.",
+        "正在暂停后台同步并计算下一轮计划。此时还不会做任何更改。",
+    ))
     was_loaded = stop_management_agent(snapshot)
     try:
         with sync_lock(config, wait=True) as acquired:
             if not acquired:
-                raise ManagementActionError("다른 동기화가 실행 중입니다. 잠시 뒤 다시 시도하세요.")
+                raise ManagementActionError(
+                    tr("Another sync is running. Try again in a moment.", "另一轮同步正在进行，请稍后再试。")
+                )
             plan = preview_mutation_plan(config)
             if plan is None or not mutation_plan_limit_reasons(config, plan):
-                print("\n승인이 필요한 대량 변경이 없습니다. 백그라운드 동기화가 평소처럼 처리합니다.")
+                print("\n" + tr(
+                    "No large change needs approval. Background sync handles everything as usual.",
+                    "没有需要确认的大批量更改，后台同步会照常处理。",
+                ))
                 return
             review = mutation_plan_review(plan)
             print_mutation_review(review)
-            if not management_confirm(args, "\n위 변경을 Apple 미리 알림과 Google Tasks에 그대로 적용할까요?"):
+            if not management_confirm(
+                args,
+                "\n" + tr(
+                    "Apply exactly these changes to Apple Reminders and Google Tasks?",
+                    "要把上面这些更改原样应用到 Apple 提醒事项和 Google Tasks 吗？",
+                ),
+            ):
                 write_sync_status(
                     config,
                     {
@@ -4399,43 +4782,51 @@ def management_approve(config: dict[str, Any], args: argparse.Namespace) -> None
                         )
                     },
                 )
-                print(
-                    "적용하지 않았습니다. 삭제·완료만 보류하고 나머지는 계속 동기화하며, "
-                    f"{korean_duration(int(config['mutation_approval_prompt_repeat_seconds']))} 뒤 다시 묻습니다."
-                )
+                repeat = duration_text(int(config["mutation_approval_prompt_repeat_seconds"]))
+                print(tr(
+                    f"Not applied. Only these deletions/completions are held; everything else keeps syncing. "
+                    f"You will be asked again in {repeat}.",
+                    f"未执行。只暂缓这些删除/完成，其余改动继续同步。{repeat}后会再次询问。",
+                ))
                 return
             backup_dir = backup_management_files(config, "approve")
-            print(f"비공개 백업 완료: {backup_dir}")
+            print(tr(f"Private backup saved: {backup_dir}", f"已保存私有备份：{backup_dir}"))
             token = mutation_plan_approval_token({"fingerprint": review["destructive_fingerprint"]})
             try:
                 run_management_sync(config, destructive_approval=token)
             except MutationPlanApprovalRequired as exc:
                 raise ManagementActionError(
-                    "확인하는 사이 변경 계획이 바뀌어 적용하지 않았습니다. 다시 실행해 새 계획을 확인하세요."
+                    tr(
+                        "The plan changed while you were reviewing it, so nothing was applied. Run this again to see the new plan.",
+                        "在你确认期间计划发生了变化，因此没有执行。请重新运行以查看新的计划。",
+                    )
                 ) from exc
-            print("\n적용 완료: 확인한 대량 변경을 반영했습니다.")
+            print("\n" + tr("Applied the reviewed changes.", "已应用你确认过的更改。"))
     finally:
         if was_loaded:
             try:
                 start_management_agent(snapshot)
-                print("백그라운드 동기화를 다시 시작했습니다.")
+                print(tr("Background sync resumed.", "后台同步已恢复。"))
             except ManagementActionError:
-                print("주의: 백그라운드 작업을 자동으로 다시 시작하지 못했습니다. '백그라운드 다시 시작'을 선택하세요.")
+                print(tr(
+                    "Warning: background sync could not be resumed. Choose \"Restart background sync\".",
+                    "注意：无法恢复后台同步。请选择“重新启动后台同步”。",
+                ))
         elif snapshot.get("agent_loaded") is False:
-            print("백그라운드 동기화는 꺼져 있습니다. 필요하면 '백그라운드 다시 시작'을 선택하세요.")
+            print(tr(
+                "Background sync is not running. Open Local Tasks Bridge to start it.",
+                "后台同步没有在运行。请打开 Local Tasks Bridge 来启动它。",
+            ))
 
 
 def management_online_check(config: dict[str, Any]) -> bool:
     print_management_summary(config)
-    print("\nGoogle 인증 토큰을 갱신하고 Tasks API를 확인합니다.")
+    print("\n" + tr("Refreshing the Google token and checking the Tasks API.", "正在刷新 Google 令牌并检查 Tasks API。"))
     result = check_google_connection(config)
     if result["state"] == "ok":
-        print(
-            f"Google 연결: 정상 ({google_account_display(result)}, "
-            f"Tasks 목록 {result['tasklist_count']}개 확인)"
-        )
+        print(google_connection_line(result))
         return True
-    print(f"Google 연결: 확인 필요 ({result['message']})")
+    print(tr(f"Google connection: needs attention ({result['message']})", f"Google 连接：需要处理（{result['message']}）"))
     return False
 
 
@@ -4454,16 +4845,23 @@ def run_management_action(config: dict[str, Any], args: argparse.Namespace, acti
     if action == "approve":
         management_approve(config, args)
         return True
-    raise ManagementActionError(f"지원하지 않는 관리 작업입니다: {action}")
+    raise ManagementActionError(tr(f"Unsupported action: {action}", f"不支持的操作：{action}"))
 
 
 def cmd_manage(args: argparse.Namespace) -> None:
     try:
         config = load_config(args)
     except (OSError, json.JSONDecodeError, SystemExit, TypeError, ValueError) as exc:
-        raise SystemExit("비공개 설정을 읽을 수 없습니다. 검토된 main 릴리스를 다시 설치하세요.") from exc
+        raise SystemExit(
+            tr(
+                "The private settings cannot be read. Open Local Tasks Bridge to repair the setup.",
+                "无法读取私有设置。请打开 Local Tasks Bridge 修复设置。",
+            )
+        ) from exc
+    apply_network_config(config)
 
     action = str(getattr(args, "action", "menu") or "menu")
+    stopped = tr("Stopped", "已中止")
     if action != "menu":
         try:
             ok = run_management_action(config, args, action)
@@ -4473,38 +4871,38 @@ def cmd_manage(args: argparse.Namespace) -> None:
             AuthenticationRequired,
             MutationPlanApprovalRequired,
         ) as exc:
-            raise SystemExit(f"관리 작업 중단: {exc}") from exc
+            raise SystemExit(f"{stopped}: {exc}") from exc
         if not ok:
             raise SystemExit(1)
         return
 
     while True:
         print_management_summary(config)
-        print("\n1. 현재 상태 보기 (읽기 전용)")
-        print("2. Google 연결 실제 확인 (토큰 갱신 가능)")
-        print("3. Google 연결 복구 및 안전 재연결")
-        print("4. 백그라운드 다시 시작")
-        print("5. 대량 변경 검토 후 적용")
-        print("0. 종료")
+        print("\n1. " + tr("Show status (read-only)", "查看状态（只读）"))
+        print("2. " + tr("Check Google connection (may refresh the token)", "检查 Google 连接（可能刷新令牌）"))
+        print("3. " + tr("Reconnect Google safely", "安全地重新连接 Google"))
+        print("4. " + tr("Restart background sync", "重新启动后台同步"))
+        print("5. " + tr("Review and apply large changes", "查看并执行大批量更改"))
+        print("0. " + tr("Quit", "退出"))
         try:
-            choice = input("선택: ").strip()
+            choice = input(tr("Choose: ", "请选择：")).strip()
         except EOFError:
             choice = "0"
         action_by_choice = {"1": "status", "2": "check", "3": "reconnect", "4": "restart", "5": "approve"}
         if choice == "0":
-            print("관리 도구를 종료합니다.")
+            print(tr("Bye.", "已退出管理工具。"))
             return
         selected = action_by_choice.get(choice)
         if not selected:
-            print("0~5 중 하나를 선택하세요.")
+            print(tr("Choose a number from 0 to 5.", "请输入 0 到 5 之间的数字。"))
             continue
         try:
             run_management_action(config, args, selected)
         except (ManagementActionError, AccountBindingRequired, AuthenticationRequired) as exc:
-            print(f"\n관리 작업 중단: {exc}")
+            print(f"\n{stopped}: {exc}")
         except SystemExit as exc:
-            print(f"\n관리 작업 중단: {exc}")
-        input("\nEnter를 누르면 메뉴로 돌아갑니다.")
+            print(f"\n{stopped}: {exc}")
+        input("\n" + tr("Press Enter to return to the menu.", "按回车键返回菜单。"))
 
 
 def inspect_tasklists_for_desired(
@@ -5625,6 +6023,30 @@ def truncate_notification_text(value: str, limit: int = 180) -> str:
     return collapsed[: limit - 1].rstrip() + "..."
 
 
+def event_stream_enabled() -> bool:
+    return os.environ.get("LTB_EVENT_STREAM") == "stdout"
+
+
+def emit_event(event: str, **fields: Any) -> None:
+    """Tell the hosting app what happened, one JSON line on the real stdout.
+
+    Only active when the app started this process with LTB_EVENT_STREAM=stdout.
+    Events never carry reminder or task titles.
+    """
+
+    if not event_stream_enabled():
+        return
+    stream = sys.__stdout__
+    if stream is None:
+        return
+    payload = {"event": event, "at": utc_now_text(), **fields}
+    try:
+        stream.write(EVENT_STREAM_PREFIX + json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+        stream.flush()
+    except (OSError, ValueError):
+        pass
+
+
 def send_macos_notification(
     config: dict[str, Any],
     title: str,
@@ -5634,7 +6056,8 @@ def send_macos_notification(
 ) -> None:
     if not config.get("macos_notifications"):
         return
-    if sys.platform != "darwin" or not shutil.which("osascript"):
+    use_event_stream = event_stream_enabled()
+    if not use_event_stream and (sys.platform != "darwin" or not shutil.which("osascript")):
         return
 
     status = read_sync_status(config)
@@ -5643,6 +6066,17 @@ def send_macos_notification(
         max(0, min_interval_seconds),
     )
     if wait_seconds > 0:
+        return
+
+    if use_event_stream:
+        # The menu bar app posts the notification under its own name.
+        emit_event(
+            "notification",
+            title=title,
+            message=truncate_notification_text(message),
+            severity="info" if status_key == "last_success_notification_at" else "problem",
+        )
+        write_sync_status(config, {status_key: utc_now_text()})
         return
 
     script = """
@@ -5668,8 +6102,8 @@ end run
 def notify_sync_ok(config: dict[str, Any]) -> None:
     send_macos_notification(
         config,
-        "iCloud Reminders Sync",
-        "Apple Reminders and Google Tasks are synced.",
+        PRODUCT_NAME,
+        tr("Apple Reminders and Google Tasks are in sync.", "Apple 提醒事项与 Google Tasks 已同步。"),
         "last_success_notification_at",
         int(config.get("notify_success_min_interval_seconds") or 3600),
     )
@@ -5678,11 +6112,29 @@ def notify_sync_ok(config: dict[str, Any]) -> None:
 def notify_sync_problem(config: dict[str, Any], message: str) -> None:
     send_macos_notification(
         config,
-        "iCloud Reminders Sync Needs Attention",
+        tr("Local Tasks Bridge needs attention", "Local Tasks Bridge 需要处理"),
         message,
         "last_failure_notification_at",
         int(config.get("notify_failure_min_interval_seconds") or 300),
     )
+
+
+def message_binding_paused() -> str:
+    return tr(
+        "Sync paused because the Apple or Google account changed. Open Local Tasks Bridge to reconnect.",
+        "Apple 或 Google 账号发生变化，同步已暂停。请打开 Local Tasks Bridge 重新连接。",
+    )
+
+
+def message_auth_required() -> str:
+    return tr(
+        "Google sign-in is required to resume sync. Open Local Tasks Bridge and choose \"Reconnect Google\".",
+        "需要重新登录 Google 才能继续同步。请打开 Local Tasks Bridge 并选择“重新连接 Google”。",
+    )
+
+
+def message_sync_failed(detail: Any) -> str:
+    return tr(f"Sync failed: {detail}", f"同步失败：{detail}")
 
 
 MUTATION_APPROVAL_STATUS_KEY = "mutation_approval"
@@ -5694,18 +6146,44 @@ MUTATION_APPROVAL_SETTLE_CYCLES = 2
 MUTATION_APPROVAL_NEW_PLAN_GAP_SECONDS = 600
 MUTATION_APPROVAL_DIALOG_SECONDS = 43200
 MUTATION_APPROVAL_POLL_SECONDS = 2.0
-MUTATION_APPROVAL_DIALOG_TITLE = "미리 알림 동기화: 대량 변경 확인"
-MUTATION_APPROVAL_APPLY_LABEL = "적용"
-MUTATION_APPROVAL_HOLD_LABEL = "보류"
 MUTATION_REVIEW_LABELS = {
-    "apple_reminders.complete": "Apple 미리 알림에서 완료 처리 (Google에서 완료됨)",
-    "apple_reminders.delete": "Apple 미리 알림에서 삭제 (Google에서 지워짐)",
-    "google_calendar.dedupe_delete": "Google Calendar 중복 일정 정리",
-    "google_calendar.delete": "Google Calendar 일정 삭제 (Apple에서 지워짐)",
-    "google_tasks.complete": "Google Tasks에서 완료 처리 (Apple에서 완료됨)",
-    "google_tasks.dedupe_delete": "Google Tasks 중복 항목 정리",
-    "google_tasks.delete": "Google Tasks에서 삭제 (Apple에서 지워짐)",
+    "apple_reminders.complete": (
+        "Complete in Apple Reminders (completed in Google)",
+        "在 Apple 提醒事项中标为完成（已在 Google 完成）",
+    ),
+    "apple_reminders.delete": (
+        "Delete from Apple Reminders (deleted in Google)",
+        "从 Apple 提醒事项删除（已在 Google 删除）",
+    ),
+    "google_calendar.dedupe_delete": ("Remove duplicate Google Calendar events", "清理重复的 Google 日历事件"),
+    "google_calendar.delete": (
+        "Delete Google Calendar events (deleted on this Mac)",
+        "删除 Google 日历事件（已在这台 Mac 上删除）",
+    ),
+    "google_tasks.complete": (
+        "Complete in Google Tasks (completed on this Mac)",
+        "在 Google Tasks 中标为完成（已在这台 Mac 上完成）",
+    ),
+    "google_tasks.dedupe_delete": ("Remove duplicate Google Tasks items", "清理重复的 Google Tasks 条目"),
+    "google_tasks.delete": (
+        "Delete in Google Tasks (deleted on this Mac)",
+        "在 Google Tasks 中删除（已在这台 Mac 上删除）",
+    ),
 }
+
+
+def mutation_approval_dialog_title() -> str:
+    return tr("Local Tasks Bridge: review a large change", "Local Tasks Bridge：确认大批量更改")
+
+
+def mutation_approval_apply_label() -> str:
+    return tr("Apply", "执行")
+
+
+def mutation_approval_hold_label() -> str:
+    return tr("Hold", "暂缓")
+
+
 # Plain ASCII on purpose, and no user-visible text inside it. The dialog body
 # carries reminder titles, so it travels in the child's environment (readable
 # only by this user) rather than in argv (visible to every local user through
@@ -5736,11 +6214,16 @@ def utc_now() -> dt.datetime:
 
 
 def mutation_review_label(key: str) -> str:
-    return MUTATION_REVIEW_LABELS.get(key, key)
+    labels = MUTATION_REVIEW_LABELS.get(key)
+    return tr(*labels) if labels else key
+
+
+def untitled_text() -> str:
+    return tr("(untitled)", "（无标题）")
 
 
 def mutation_review_item_text(item: dict[str, Any], limit: int = 60) -> str:
-    title = " ".join(str(item.get("title") or "").split()) or "(제목 없음)"
+    title = " ".join(str(item.get("title") or "").split()) or untitled_text()
     list_title = " ".join(str(item.get("list") or "").split())
     return truncate_notification_text(f"[{list_title}] {title}" if list_title else title, limit)
 
@@ -5771,35 +6254,54 @@ def mutation_review_samples(items: list[dict[str, Any]], limit: int) -> list[dic
     return picked
 
 
-def korean_duration(seconds: int) -> str:
+def duration_text(seconds: int) -> str:
     seconds = max(0, int(seconds))
     if seconds >= 3600 and seconds % 3600 == 0:
-        return f"{seconds // 3600}시간"
-    return f"{max(1, seconds // 60)}분"
+        hours = seconds // 3600
+        return tr(f"{hours} hour{'s' if hours != 1 else ''}", f"{hours} 小时")
+    minutes = max(1, seconds // 60)
+    return tr(f"{minutes} minute{'s' if minutes != 1 else ''}", f"{minutes} 分钟")
 
 
 def mutation_approval_dialog_text(review: dict[str, Any], repeat_seconds: int, sample_limit: int = 5) -> str:
     items = [item for item in review.get("items") or [] if isinstance(item, dict)]
-    lines = ["한 번에 반영하기에는 삭제·완료 변경이 많아 확인이 필요합니다.", ""]
+    lines = [
+        tr(
+            "There are more deletions/completions than the safety limit allows in one go, so please confirm.",
+            "这次要执行的删除/完成数量超过了单次安全上限，需要你确认。",
+        ),
+        "",
+    ]
+    no_list = tr("no list", "无清单")
     for key, group in mutation_review_by_operation(review):
-        lines.append(f"{mutation_review_label(key)}: {len(group)}건")
+        lines.append(f"{mutation_review_label(key)}: {len(group)}")
         by_list = mutation_review_by_list(group)
         if any(list_title for list_title, _entries in by_list):
             lines.append(
-                "  " + " · ".join(f"{list_title or '목록 없음'} {len(entries)}" for list_title, entries in by_list)
+                "  " + " · ".join(f"{list_title or no_list} {len(entries)}" for list_title, entries in by_list)
             )
     samples = mutation_review_samples(items, sample_limit)
     if samples:
-        lines.extend(["", "예시"])
+        lines.extend(["", tr("Examples", "示例")])
         lines.extend(f"· {mutation_review_item_text(item)}" for item in samples)
         if len(items) > len(samples):
-            lines.append(f"외 {len(items) - len(samples)}건")
+            remaining = len(items) - len(samples)
+            lines.append(tr(f"and {remaining} more", f"另外还有 {remaining} 项"))
+    apply_label = mutation_approval_apply_label()
+    hold_label = mutation_approval_hold_label()
+    repeat = duration_text(repeat_seconds)
     lines.extend(
         [
             "",
-            "직접 지우거나 완료한 것이 맞다면 '적용'을 누르세요.",
-            f"'보류'를 누르면 삭제·완료만 멈추고 나머지는 계속 동기화하며, "
-            f"{korean_duration(repeat_seconds)} 뒤 다시 묻습니다.",
+            tr(
+                f"If you really deleted or completed these, choose \"{apply_label}\".",
+                f"如果这些确实是你删除或完成的，请选择“{apply_label}”。",
+            ),
+            tr(
+                f"\"{hold_label}\" holds only the deletions/completions, keeps syncing everything else, "
+                f"and asks again in {repeat}.",
+                f"选择“{hold_label}”只会暂缓这些删除/完成，其余改动继续同步，{repeat}后会再次询问。",
+            ),
         ]
     )
     return "\n".join(lines)
@@ -5807,17 +6309,19 @@ def mutation_approval_dialog_text(review: dict[str, Any], repeat_seconds: int, s
 
 def print_mutation_review(review: dict[str, Any]) -> None:
     ratio = float(review.get("destructive_ratio") or 0.0) * 100
-    print(
-        f"\n대기 중인 대량 변경: {int(review.get('destructive_count') or 0)}건 "
-        f"(관리 중인 항목 {int(review.get('population') or 0)}개 중 {ratio:.1f}%)"
-    )
+    count = int(review.get("destructive_count") or 0)
+    population = int(review.get("population") or 0)
+    print("\n" + tr(
+        f"Pending large change: {count} items ({ratio:.1f}% of the {population} managed items)",
+        f"待确认的大批量更改：{count} 项（占 {population} 个受管理条目的 {ratio:.1f}%）",
+    ))
     for key, group in mutation_review_by_operation(review):
-        print(f"\n{mutation_review_label(key)}: {len(group)}건")
+        print(f"\n{mutation_review_label(key)}: {len(group)}")
         for list_title, entries in mutation_review_by_list(group):
             if list_title:
-                print(f"  [{list_title}] {len(entries)}건")
+                print(f"  [{list_title}] {len(entries)}")
             for item in entries:
-                print(f"    - {' '.join(str(item.get('title') or '').split()) or '(제목 없음)'}")
+                print(f"    - {' '.join(str(item.get('title') or '').split()) or untitled_text()}")
 
 
 def launch_mutation_approval_dialog(title: str, text: str, wait_seconds: int) -> Any:
@@ -5833,8 +6337,8 @@ def launch_mutation_approval_dialog(title: str, text: str, wait_seconds: int) ->
                 "-e",
                 MUTATION_APPROVAL_DIALOG_SCRIPT,
                 title,
-                MUTATION_APPROVAL_HOLD_LABEL,
-                MUTATION_APPROVAL_APPLY_LABEL,
+                mutation_approval_hold_label(),
+                mutation_approval_apply_label(),
                 str(max(1, int(wait_seconds))),
             ],
             env=environment,
@@ -6021,7 +6525,7 @@ class MutationPlanApprovals:
         process = None
         if self.config.get("mutation_approval_prompt"):
             process = launch_mutation_approval_dialog(
-                MUTATION_APPROVAL_DIALOG_TITLE,
+                mutation_approval_dialog_title(),
                 mutation_approval_dialog_text(review, int(self.config["mutation_approval_prompt_repeat_seconds"])),
                 MUTATION_APPROVAL_DIALOG_SECONDS,
             )
@@ -6032,12 +6536,30 @@ class MutationPlanApprovals:
         self.process, self.process_fingerprint = process, fingerprint
         self.remember(fingerprint, "", now=now, prompted=True)
         print("Asked the signed-in user to review a large destructive mutation plan.", flush=True)
-        notify_sync_problem(self.config, "대량 삭제·완료 확인 창을 열었습니다. '적용' 또는 '보류'를 선택하세요.")
+        emit_event(
+            "approval_requested",
+            destructive_fingerprint=fingerprint,
+            destructive_count=len(review.get("items") or []),
+        )
+        apply_label = mutation_approval_apply_label()
+        hold_label = mutation_approval_hold_label()
+        notify_sync_problem(
+            self.config,
+            tr(
+                f"Please review a large batch of deletions/completions: choose \"{apply_label}\" or \"{hold_label}\".",
+                f"有一批较多的删除/完成需要确认：请选择“{apply_label}”或“{hold_label}”。",
+            ),
+        )
 
     def notify_manager_fallback(self) -> None:
         notify_sync_problem(
             self.config,
-            "대량 삭제·완료 확인이 필요합니다. 'Google Tasks 동기화 관리'에서 검토한 뒤 적용하거나 보류하세요.",
+            tr(
+                "A large batch of deletions/completions needs review. Open Local Tasks Bridge and choose "
+                "\"Review Pending Changes\" (or run `ltb approvals show`).",
+                "有一批较多的删除/完成需要确认。请打开 Local Tasks Bridge 并选择“查看待确认的更改”"
+                "（或运行 `ltb approvals show`）。",
+            ),
         )
 
     def resolve(self) -> None:
@@ -6281,7 +6803,10 @@ def maybe_run_auto_reauth(config: dict[str, Any], reason: str) -> bool:
                 "last_error": str(exc),
             },
         )
-        notify_sync_problem(config, "Google login timed out. The sync agent will retry automatically.")
+        notify_sync_problem(
+            config,
+            tr("Google sign-in timed out; it will be retried automatically.", "Google 登录超时，稍后会自动重试。"),
+        )
         eprint(f"Automatic browser reauth timed out: {exc}")
         return False
     except SystemExit as exc:
@@ -6312,7 +6837,10 @@ def maybe_run_auto_reauth(config: dict[str, Any], reason: str) -> bool:
                 "last_error": f"Automatic Google OAuth browser login failed: {error_text}",
             },
         )
-        notify_sync_problem(config, "Google login could not start. The sync agent will retry automatically.")
+        notify_sync_problem(
+            config,
+            tr("Google sign-in could not start; it will be retried automatically.", "无法启动 Google 登录，稍后会自动重试。"),
+        )
         eprint(f"Automatic browser reauth failed unexpectedly: {error_text}")
         return False
 
@@ -6357,7 +6885,13 @@ def cmd_sync(args: argparse.Namespace) -> None:
         try:
             run_sync(config, dry_run=bool(args.dry_run))
         except MutationPlanApprovalRequired:
-            notify_sync_problem(config, "Sync paused because a destructive mutation plan requires explicit approval.")
+            notify_sync_problem(
+                config,
+                tr(
+                    "Sync paused: a large batch of deletions/completions needs your approval.",
+                    "同步已暂停：有一批较多的删除/完成需要你确认。",
+                ),
+            )
             raise
         except AccountBindingRequired as exc:
             write_sync_status(
@@ -6368,7 +6902,7 @@ def cmd_sync(args: argparse.Namespace) -> None:
                     "last_error": str(exc),
                 },
             )
-            notify_sync_problem(config, "Sync paused because the Apple or Google account binding changed.")
+            notify_sync_problem(config, message_binding_paused())
             raise SystemExit(str(exc)) from exc
         except AuthenticationRequired as exc:
             write_sync_status(
@@ -6379,7 +6913,7 @@ def cmd_sync(args: argparse.Namespace) -> None:
                     "last_error": str(exc),
                 },
             )
-            notify_sync_problem(config, "Google authentication is required. Complete the browser login to resume sync.")
+            notify_sync_problem(config, message_auth_required())
             raise SystemExit(str(exc)) from exc
         except Exception as exc:
             write_sync_status(
@@ -6390,7 +6924,7 @@ def cmd_sync(args: argparse.Namespace) -> None:
                     "last_error": str(exc),
                 },
             )
-            notify_sync_problem(config, f"Sync failed: {exc}")
+            notify_sync_problem(config, message_sync_failed(exc))
             raise
         write_sync_status(
             config,
@@ -6469,7 +7003,7 @@ def cmd_run_loop(args: argparse.Namespace) -> None:
                     "consecutive_failures": consecutive_failures,
                 },
             )
-            notify_sync_problem(config, "Sync paused because the Apple or Google account binding changed.")
+            notify_sync_problem(config, message_binding_paused())
         except AuthenticationRequired as exc:
             consecutive_failures += 1
             eprint(f"Sync loop auth required: {exc}")
@@ -6483,7 +7017,7 @@ def cmd_run_loop(args: argparse.Namespace) -> None:
                     "consecutive_failures": consecutive_failures,
                 },
             )
-            notify_sync_problem(config, "Google authentication is required. Complete the browser login to resume sync.")
+            notify_sync_problem(config, message_auth_required())
             if maybe_run_auto_reauth(config, error_text):
                 print("Retrying sync after automatic Google OAuth login.", flush=True)
                 try:
@@ -6506,7 +7040,7 @@ def cmd_run_loop(args: argparse.Namespace) -> None:
                             "consecutive_failures": consecutive_failures,
                         },
                     )
-                    notify_sync_problem(config, "Google authentication is still required after retry.")
+                    notify_sync_problem(config, message_auth_required())
                 except MutationPlanApprovalRequired as retry_exc:
                     consecutive_failures += 1
                     eprint(f"Sync retry blocked by mutation plan: {retry_exc}")
@@ -6532,10 +7066,7 @@ def cmd_run_loop(args: argparse.Namespace) -> None:
                             "consecutive_failures": consecutive_failures,
                         },
                     )
-                    notify_sync_problem(
-                        config,
-                        "Sync paused because the Apple or Google account binding changed.",
-                    )
+                    notify_sync_problem(config, message_binding_paused())
                 except SystemExit as retry_exc:
                     consecutive_failures += 1
                     eprint(f"Sync retry error: {retry_exc}")
@@ -6548,7 +7079,7 @@ def cmd_run_loop(args: argparse.Namespace) -> None:
                             "consecutive_failures": consecutive_failures,
                         },
                     )
-                    notify_sync_problem(config, f"Sync retry failed: {retry_exc}")
+                    notify_sync_problem(config, message_sync_failed(retry_exc))
                 except Exception as retry_exc:  # noqa: BLE001 - keep the scheduler alive after retry failures.
                     consecutive_failures += 1
                     eprint(f"Sync retry error: {retry_exc}")
@@ -6561,7 +7092,7 @@ def cmd_run_loop(args: argparse.Namespace) -> None:
                             "consecutive_failures": consecutive_failures,
                         },
                     )
-                    notify_sync_problem(config, f"Sync retry failed: {retry_exc}")
+                    notify_sync_problem(config, message_sync_failed(retry_exc))
         except SystemExit as exc:
             consecutive_failures += 1
             eprint(f"Sync loop error: {exc}")
@@ -6574,7 +7105,7 @@ def cmd_run_loop(args: argparse.Namespace) -> None:
                     "consecutive_failures": consecutive_failures,
                 },
             )
-            notify_sync_problem(config, f"Sync failed: {exc}")
+            notify_sync_problem(config, message_sync_failed(exc))
         except Exception as exc:  # noqa: BLE001 - a scheduler should log and keep running.
             consecutive_failures += 1
             eprint(f"Sync loop error: {exc}")
@@ -6587,7 +7118,7 @@ def cmd_run_loop(args: argparse.Namespace) -> None:
                     "consecutive_failures": consecutive_failures,
                 },
             )
-            notify_sync_problem(config, f"Sync failed: {exc}")
+            notify_sync_problem(config, message_sync_failed(exc))
         print(f"[{utc_now_text()}] sync end", flush=True)
         try:
             wait_for_next_cycle(interval, approvals, cycle_started_at=cycle_started_at)

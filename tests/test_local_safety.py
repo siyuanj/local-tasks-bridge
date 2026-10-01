@@ -1,14 +1,20 @@
-"""Offline regression checks for the bounded local trial."""
+"""Offline regression checks for completion and deletion safety."""
+from __future__ import annotations
+
 import contextlib
 import io
 import json
-from pathlib import Path
 import tempfile
 import unittest
 from unittest import mock
 import urllib.parse
 
-import icloud_reminders_google_sync as sync
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "engine"))
+
+import local_tasks_bridge as sync  # noqa: E402
 
 
 class LocalSafetyTests(unittest.TestCase):

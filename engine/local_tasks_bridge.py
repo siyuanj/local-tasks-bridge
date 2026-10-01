@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+"""Local Tasks Bridge: a local-first bridge between Apple Reminders and Google Tasks.
+
+This single-file engine reads and writes Apple Reminders through small EventKit
+helpers, talks to the official Google Tasks API with the signed-in user's own
+OAuth token, and keeps every credential, sync state file, and log on this Mac.
+
+The engine runs under Python 3.9 or newer and uses only the standard library.
+"""
 from __future__ import annotations
 
 import argparse
@@ -12,32 +20,66 @@ import io
 import json
 import os
 from pathlib import Path
+import plistlib
 import secrets
 import shutil
+import signal
 import sqlite3
 import stat
 import subprocess
 import sys
 import time
-from typing import Any
+from typing import Any, Callable
 import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
 
 
-APP_NAME = "icloud-reminders-google-sync"
-LAUNCH_AGENT_LABEL = "com.icloud-reminders-google-sync"
-PROJECT_DIR = Path(__file__).resolve().parent
+__version__ = "1.0.0"
+PRODUCT_NAME = "Local Tasks Bridge"
+APP_NAME = "local-tasks-bridge"
+APP_BUNDLE_ID = "io.github.siyuanj.LocalTasksBridge"
+LAUNCH_AGENT_LABEL = "io.github.siyuanj.local-tasks-bridge"
+PROJECT_URL = "https://github.com/siyuanj/local-tasks-bridge"
+# Earlier installations (the upstream project and the 2026-09 private trial)
+# used these names. They are only read to migrate or retire old installs.
+LEGACY_APP_NAME = "icloud-reminders-google-sync"
+LEGACY_LAUNCH_AGENT_LABEL = "com.icloud-reminders-google-sync"
+LEGACY_TRIAL_CONFIG_DIR_NAME = "reminders-task-bridge-trial"
+ENGINE_DIR = Path(__file__).resolve().parent
+ENGINE_FILENAME = Path(__file__).name
 SYNC_MARKER_KEY = "irsync"
 SYNC_MARKER_VALUE = "v1"
 UID_KEY = "iruid"
 DIGEST_KEY = "irdigest"
-CALENDAR_API = "https://www.googleapis.com/calendar/v3"
-TASKS_API = "https://tasks.googleapis.com/tasks/v1"
-OAUTH_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
-OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
-OAUTH_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
+
+
+def endpoint_override(name: str, default: str) -> str:
+    """Return a Google endpoint, optionally redirected for local testing.
+
+    Only HTTPS endpoints or plain HTTP on the loopback interface are accepted,
+    so an override can point the engine at a local test double but can never
+    send tokens over the network unencrypted.
+    """
+
+    value = str(os.environ.get(name) or "").strip().rstrip("/")
+    if not value:
+        return default
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.scheme == "https" and parsed.hostname:
+        return value
+    if parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost", "::1"}:
+        return value
+    raise SystemExit(f"{name} must be an https:// URL or an http:// loopback URL.")
+
+
+CALENDAR_API = endpoint_override("LTB_CALENDAR_API", "https://www.googleapis.com/calendar/v3")
+TASKS_API = endpoint_override("LTB_TASKS_API", "https://tasks.googleapis.com/tasks/v1")
+OAUTH_AUTH_URL = endpoint_override("LTB_OAUTH_AUTH_URL", "https://accounts.google.com/o/oauth2/v2/auth")
+OAUTH_TOKEN_URL = endpoint_override("LTB_OAUTH_TOKEN_URL", "https://oauth2.googleapis.com/token")
+OAUTH_USERINFO_URL = endpoint_override("LTB_OAUTH_USERINFO_URL", "https://openidconnect.googleapis.com/v1/userinfo")
+OAUTH_REVOKE_URL = endpoint_override("LTB_OAUTH_REVOKE_URL", "https://oauth2.googleapis.com/revoke")
 CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events"
 TASKS_SCOPE = "https://www.googleapis.com/auth/tasks"
 LOCAL_OAUTH_SCOPES = " ".join([CALENDAR_SCOPE, TASKS_SCOPE, "openid", "email"])
@@ -75,18 +117,120 @@ KNOWN_STATUS_STATES = {
     "dry_run_ok",
     "failed",
     "ok",
+    "paused",
     "running",
 }
+OAUTH_CLIENT_MODES = {"auto", "custom", "bundled"}
+SUPPORTED_LANGUAGES = ("en", "zh")
+LANGUAGE_PREFERENCES = {"auto", *SUPPORTED_LANGUAGES}
+EVENT_STREAM_PREFIX = "@@LTB "
+DEFAULT_LOG_MAX_BYTES = 5 * 1024 * 1024
+SYNC_NOW_POLL_SECONDS = 1.0
+MIN_SYNC_INTERVAL_SECONDS = 60
+
+
+# --- Language -------------------------------------------------------------
+#
+# Every message a person reads (the manager, doctor, status, notifications and
+# the bulk-change dialog) is available in English and Simplified Chinese. Log
+# lines and machine-readable output stay English so they remain stable for
+# support and for the app that parses them.
+
+_LANGUAGE: str | None = None
+
+
+def normalize_language(value: Any) -> str | None:
+    text = str(value or "").strip().lower().replace("_", "-")
+    if not text or text in {"c", "posix"} or text.startswith(("c.", "posix.")):
+        return None
+    if text.startswith("zh"):
+        return "zh"
+    if text.startswith("en"):
+        return "en"
+    return "other"
+
+
+def macos_preferred_language() -> str | None:
+    if sys.platform != "darwin" or not shutil.which("defaults"):
+        return None
+    try:
+        result = subprocess.run(
+            ["defaults", "read", "-g", "AppleLanguages"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    for raw_line in result.stdout.splitlines():
+        candidate = raw_line.strip().strip('(),"').strip()
+        if candidate:
+            return candidate
+    return None
+
+
+def detect_language(preference: Any = None) -> str:
+    """Pick "en" or "zh": explicit preference, LTB_LANG, locale, then macOS."""
+
+    explicit = normalize_language(preference) if str(preference or "auto") != "auto" else None
+    if explicit in SUPPORTED_LANGUAGES:
+        return explicit
+    for name in ("LTB_LANG", "LC_ALL", "LC_MESSAGES", "LANG"):
+        detected = normalize_language(os.environ.get(name))
+        if detected in SUPPORTED_LANGUAGES:
+            return detected
+        if detected == "other" and name == "LTB_LANG":
+            return "en"
+    detected = normalize_language(macos_preferred_language())
+    return detected if detected in SUPPORTED_LANGUAGES else "en"
+
+
+def set_language(language: str | None) -> str:
+    global _LANGUAGE
+    _LANGUAGE = language if language in SUPPORTED_LANGUAGES else detect_language(language)
+    return _LANGUAGE
+
+
+def current_language() -> str:
+    if _LANGUAGE is None:
+        return set_language(None)
+    return _LANGUAGE
+
+
+def tr(en: str, zh: str) -> str:
+    """Return the message in the active language."""
+
+    return zh if current_language() == "zh" else en
 
 
 def default_config_dir() -> Path:
     return Path(os.environ.get("XDG_CONFIG_HOME", "~/.config")).expanduser() / APP_NAME
 
 
+CONFIG_PATH_KEYS = ("credentials_path", "token_path", "state_path", "status_path")
+CONFIG_PATH_DEFAULT_NAMES = {
+    "credentials_path": "credentials.json",
+    "token_path": "token.json",
+    "state_path": "state.json",
+    "status_path": "status.json",
+}
+CONFIG_VERSION = 2
+
+
 def default_config() -> dict[str, Any]:
+    """Engine defaults for keys a config file does not set."""
+
     config_dir = default_config_dir()
     return {
-        "use_adc": True,
+        "language": "auto",
+        "oauth_client": "auto",
+        "proxy": "",
+        "manual_oauth_browser": False,
+        "trigger_min_interval_seconds": 10,
+        "use_adc": False,
         "adc_credentials_path": str(Path.home() / ".config/gcloud/application_default_credentials.json"),
         "credentials_path": str(config_dir / "credentials.json"),
         "token_path": str(config_dir / "token.json"),
@@ -108,8 +252,9 @@ def default_config() -> dict[str, Any]:
         "auto_approve_destructive_loops": 0,
         "mutation_approval_prompt": True,
         "mutation_approval_prompt_repeat_seconds": 21600,
-        "reminders_exporter_path": str(PROJECT_DIR / "RemindersExport.swift"),
-        "reminders_apply_path": str(PROJECT_DIR / "RemindersApply.swift"),
+        # Empty means "find the helper that ships with this engine".
+        "reminders_exporter_path": "",
+        "reminders_apply_path": "",
         "reminders_source": "auto",
         "reminders_sqlite_dir": str(Path.home() / "Library/Group Containers/group.com.apple.reminders/Container_v1/Stores"),
         "target_service": "tasks",
@@ -134,6 +279,44 @@ def default_config() -> dict[str, Any]:
         "conflict_policy": "newer_wins",
         "transparency": "transparent",
         "google_popup_minutes": [],
+    }
+
+
+def product_default_config() -> dict[str, Any]:
+    """The choices a new installation starts with.
+
+    Two-way sync of the selected lists, including undated reminders and
+    existing Google tasks, with completions and deletions propagated inside
+    the destructive-change safety limits.
+    """
+
+    return {
+        "config_version": CONFIG_VERSION,
+        "language": "auto",
+        "oauth_client": "auto",
+        "proxy": "",
+        "target_service": "tasks",
+        "reminders_source": "eventkit",
+        "include_lists": [],
+        "list_policies": {},
+        "bidirectional": True,
+        "delete_stale": True,
+        "allow_empty_source_delete": False,
+        "conflict_policy": "newer_wins",
+        "tasks_mirror_lists": True,
+        "tasks_mirror_empty_lists": True,
+        "tasks_create_missing_lists": True,
+        "tasks_complete_stale": True,
+        "tasks_import_unsynced": True,
+        "tasks_sync_undated": True,
+        "sync_interval_seconds": 60,
+        "max_destructive_changes": 25,
+        "max_destructive_ratio": 0.25,
+        "auto_approve_destructive_loops": 0,
+        "mutation_approval_prompt": True,
+        "macos_notifications": True,
+        "auto_reauth_browser": False,
+        "verify_title_due_after_sync": True,
     }
 
 
@@ -648,6 +831,7 @@ def reminder_is_undated(reminder: dict[str, Any]) -> bool:
 def load_config(args: argparse.Namespace) -> dict[str, Any]:
     config = default_config()
     config_path = expand_path(args.config)
+    loaded: dict[str, Any] = {}
 
     if config_path.exists():
         loaded = read_json(config_path)
@@ -655,7 +839,16 @@ def load_config(args: argparse.Namespace) -> dict[str, Any]:
             raise SystemExit(f"Config file is not a JSON object: {config_path}")
         config.update(loaded)
 
+    # Private files live next to the config unless the config says otherwise,
+    # so --config can point at a self-contained directory.
+    for key in CONFIG_PATH_KEYS:
+        if key not in loaded:
+            config[key] = str(config_path.parent / CONFIG_PATH_DEFAULT_NAMES[key])
+
     for key in (
+        "language",
+        "proxy",
+        "oauth_client",
         "credentials_path",
         "adc_credentials_path",
         "token_path",
@@ -739,11 +932,12 @@ def load_config(args: argparse.Namespace) -> dict[str, Any]:
         "token_path",
         "state_path",
         "status_path",
-        "reminders_exporter_path",
-        "reminders_apply_path",
         "reminders_sqlite_dir",
     ):
         config[path_key] = str(expand_path(config[path_key]))
+    for path_key in ("reminders_exporter_path", "reminders_apply_path"):
+        value = str(config.get(path_key) or "").strip()
+        config[path_key] = str(expand_path(value)) if value else ""
 
     config["_config_path"] = str(config_path)
     config["auto_reauth_browser"] = bool(config.get("auto_reauth_browser"))
@@ -803,15 +997,71 @@ def load_config(args: argparse.Namespace) -> dict[str, Any]:
         raise SystemExit("Unsupported target_service. Supported values: tasks, calendar")
     if config["conflict_policy"] not in CONFLICT_POLICIES:
         raise SystemExit("Unsupported conflict_policy. Currently supported: skip, newer_wins")
+    config["language"] = str(config.get("language") or "auto").strip().lower()
+    if config["language"] not in LANGUAGE_PREFERENCES:
+        raise SystemExit("Unsupported language. Supported values: auto, en, zh")
+    config["oauth_client"] = str(config.get("oauth_client") or "auto").strip().lower()
+    if config["oauth_client"] not in OAUTH_CLIENT_MODES:
+        raise SystemExit("Unsupported oauth_client. Supported values: auto, custom, bundled")
+    config["proxy"] = normalize_proxy_setting(config.get("proxy"))
+    config["manual_oauth_browser"] = bool(config.get("manual_oauth_browser"))
+    config["trigger_min_interval_seconds"] = max(0, int(config.get("trigger_min_interval_seconds") or 0))
+    set_language(detect_language(config["language"]))
     return config
+
+
+def normalize_proxy_setting(value: Any) -> str:
+    """"" uses the environment or macOS system proxy, "none" connects directly."""
+
+    text = str(value or "").strip()
+    if not text or text.lower() == "auto":
+        return ""
+    if text.lower() in {"none", "direct", "off"}:
+        return "none"
+    parsed = urllib.parse.urlsplit(text)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise SystemExit("proxy must be empty (system proxy), \"none\", or an http://host:port URL.")
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise SystemExit("proxy has an invalid port.") from exc
+    return text
+
+
+def proxy_handler_for(setting: str) -> urllib.request.ProxyHandler | None:
+    if setting == "none":
+        return urllib.request.ProxyHandler({})
+    if setting:
+        return urllib.request.ProxyHandler({"http": setting, "https": setting})
+    return None
+
+
+def apply_network_config(config: dict[str, Any]) -> None:
+    """Route Google requests through the configured proxy.
+
+    Without a setting, urllib already honours HTTP(S)_PROXY and, on macOS, the
+    system proxy from System Settings. Many users in mainland China reach
+    Google only through a local proxy, so the app can pin one explicitly.
+    """
+
+    handler = proxy_handler_for(str(config.get("proxy") or ""))
+    if handler is None:
+        return
+    urllib.request.install_opener(urllib.request.build_opener(handler))
 
 
 def load_credentials(path: Path) -> dict[str, str]:
     if not path.exists():
         raise SystemExit(
-            f"Google OAuth credentials not found: {path}\n"
-            "Create a Desktop OAuth client in Google Cloud, enable the Google Calendar/Tasks APIs, "
-            "download the JSON, and place it at this path."
+            tr(
+                f"Google OAuth client file not found: {path}\n"
+                "Create a Desktop app OAuth client in your Google Cloud project with the Google Tasks API "
+                "enabled, download its JSON, and import it with `ltb client import <file>` "
+                "(or from the app's setup assistant).",
+                f"找不到 Google OAuth 客户端文件：{path}\n"
+                "请在你的 Google Cloud 项目中启用 Google Tasks API，创建“桌面应用”类型的 OAuth 客户端，"
+                "下载 JSON 后用 `ltb client import <文件>` 导入（或在 App 的设置向导中导入）。",
+            )
         )
 
     raw = read_json(path)
@@ -821,6 +1071,116 @@ def load_credentials(path: Path) -> dict[str, str]:
     if not client_id:
         raise SystemExit(f"Could not find client_id in {path}")
     return {"client_id": client_id, "client_secret": client_secret}
+
+
+def validate_oauth_client_document(raw: Any) -> dict[str, str]:
+    """Accept only a Google "Desktop app" client, the type loopback OAuth needs."""
+
+    if not isinstance(raw, dict):
+        raise SystemExit(tr("The OAuth client file is not a JSON object.", "OAuth 客户端文件不是 JSON 对象。"))
+    if "web" in raw and "installed" not in raw:
+        raise SystemExit(
+            tr(
+                "This is a \"Web application\" OAuth client. Create a client of type \"Desktop app\" "
+                "in Google Cloud (Google Auth Platform → Clients) and download that JSON instead.",
+                "这是“Web 应用”类型的 OAuth 客户端。请在 Google Cloud（Google Auth Platform → 客户端）"
+                "中创建“桌面应用”类型的客户端，并下载那个 JSON。",
+            )
+        )
+    client = raw.get("installed")
+    if not isinstance(client, dict):
+        raise SystemExit(
+            tr(
+                "This file is not a Google OAuth client. Download the JSON of a \"Desktop app\" client "
+                "from Google Cloud (Google Auth Platform → Clients).",
+                "这不是 Google OAuth 客户端文件。请从 Google Cloud（Google Auth Platform → 客户端）"
+                "下载“桌面应用”客户端的 JSON。",
+            )
+        )
+    client_id = str(client.get("client_id") or "").strip()
+    if not client_id.endswith(".apps.googleusercontent.com"):
+        raise SystemExit(tr("The OAuth client file has no valid client_id.", "OAuth 客户端文件缺少有效的 client_id。"))
+    return {"client_id": client_id, "client_secret": str(client.get("client_secret") or "")}
+
+
+def bundled_oauth_client_path() -> Path | None:
+    """The OAuth client a release build ships with, if any.
+
+    Release builds may embed the maintainer's "Local Tasks Bridge" Desktop
+    client as Resources/oauth_client.json. It is injected at build time and is
+    never committed to the repository.
+    """
+
+    override = str(os.environ.get("LTB_BUNDLED_OAUTH_CLIENT") or "").strip()
+    if override:
+        candidate = Path(override).expanduser()
+        return candidate if candidate.is_file() else None
+    candidate = ENGINE_DIR.parent / "oauth_client.json"
+    return candidate if candidate.is_file() else None
+
+
+def resolve_oauth_client(config: dict[str, Any]) -> tuple[str, dict[str, str]]:
+    """Return ("custom" | "bundled", client) for a new Google sign-in."""
+
+    mode = str(config.get("oauth_client") or "auto")
+    custom_path = expand_path(config["credentials_path"])
+    if mode == "custom" or (mode == "auto" and custom_path.exists()):
+        return "custom", load_credentials(custom_path)
+    bundled = bundled_oauth_client_path()
+    if bundled is not None:
+        return "bundled", validate_oauth_client_document(read_json(bundled))
+    if mode == "bundled":
+        raise SystemExit(
+            tr(
+                "This build does not include a shared Google OAuth client. Import your own Desktop app "
+                "client with `ltb client import <file>`; see docs/google-cloud-setup.md.",
+                "这个版本没有内置共享的 Google OAuth 客户端。请用 `ltb client import <文件>` 导入你自己的"
+                "桌面应用客户端，步骤见 docs/google-cloud-setup.zh-CN.md。",
+            )
+        )
+    return "custom", load_credentials(custom_path)
+
+
+def oauth_client_status(config: dict[str, Any]) -> dict[str, Any]:
+    custom_ready = expand_path(config["credentials_path"]).is_file()
+    bundled_ready = bundled_oauth_client_path() is not None
+    mode = str(config.get("oauth_client") or "auto")
+    if mode == "custom" or (mode == "auto" and custom_ready):
+        active = "custom" if custom_ready else "missing"
+    elif bundled_ready:
+        active = "bundled"
+    else:
+        active = "missing"
+    return {"mode": mode, "active": active, "custom_ready": custom_ready, "bundled_available": bundled_ready}
+
+
+def decode_jwt_payload(token: str) -> dict[str, Any]:
+    """Read an ID token's claims.
+
+    The token comes straight from Google's token endpoint over TLS, which is
+    the case where OpenID Connect allows skipping signature validation. Only
+    the subject is used, and only as a local, hashed account identity.
+    """
+
+    parts = str(token or "").split(".")
+    if len(parts) != 3:
+        return {}
+    padded = parts[1] + "=" * (-len(parts[1]) % 4)
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def google_account_subject(token: dict[str, Any]) -> str:
+    """The stable Google account ID ("sub") behind a token, or ""."""
+
+    claims = decode_jwt_payload(str((token or {}).get("id_token") or ""))
+    subject = str(claims.get("sub") or "").strip()
+    if subject:
+        return subject
+    return str((token or {}).get("_account_subject") or "").strip()
 
 
 def load_adc_credentials(path: Path) -> dict[str, Any] | None:
@@ -850,17 +1210,34 @@ def make_code_challenge(verifier: str) -> str:
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
 
+OAUTH_CALLBACK_PAGE = """<!doctype html>
+<html><head><meta charset="utf-8"><title>Local Tasks Bridge</title>
+<style>body{font:16px -apple-system,BlinkMacSystemFont,sans-serif;margin:15vh auto;max-width:34em;
+padding:0 1.5em;color:#1d1d1f}h1{font-size:1.5em}p{color:#555;line-height:1.5}</style></head>
+<body><h1>Local Tasks Bridge</h1><p>%s</p><p>%s</p></body></html>
+"""
+
+
 class OAuthCallbackHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - required by BaseHTTPRequestHandler
         parsed = urllib.parse.urlparse(self.path)
         params = urllib.parse.parse_qs(parsed.query)
+        # Only Google's redirect carries these parameters. A favicon request or
+        # a stray local connection must not end the sign-in with a mismatch.
+        if parsed.path not in ("", "/") or not any(key in params for key in ("code", "error", "state")):
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         self.server.oauth_result = {key: values[0] for key, values in params.items()}  # type: ignore[attr-defined]
 
-        body = (
-            "<html><body><h1>Authorization received</h1>"
-            "<p>You can close this browser tab and return to the terminal.</p>"
-            "</body></html>"
-        ).encode("utf-8")
+        if "error" in params:
+            english = "Google sign-in was not completed. You can close this tab and try again from Local Tasks Bridge."
+            chinese = "Google 登录没有完成。可以关闭此页面，然后在 Local Tasks Bridge 中重试。"
+        else:
+            english = "Google authorization received. You can close this tab and return to Local Tasks Bridge."
+            chinese = "已收到 Google 授权。可以关闭此页面，回到 Local Tasks Bridge。"
+        body = (OAUTH_CALLBACK_PAGE % (english, chinese)).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -923,8 +1300,16 @@ def open_auth_url(url: str) -> bool:
     return webbrowser.open(url)
 
 
-def run_auth_flow(config: dict[str, Any]) -> None:
-    credentials = load_credentials(expand_path(config["credentials_path"]))
+def token_granted_scopes(token: dict[str, Any]) -> set[str]:
+    return {scope for scope in str((token or {}).get("scope") or "").split() if scope}
+
+
+def required_google_scope(config: dict[str, Any]) -> str:
+    return TASKS_SCOPE if config.get("target_service", "tasks") == "tasks" else CALENDAR_SCOPE
+
+
+def run_auth_flow(config: dict[str, Any]) -> dict[str, Any]:
+    client_mode, credentials = resolve_oauth_client(config)
     token_path = expand_path(config["token_path"])
     verifier = make_code_verifier()
     state = secrets.token_urlsafe(24)
@@ -938,10 +1323,7 @@ def run_auth_flow(config: dict[str, Any]) -> None:
         "client_id": credentials["client_id"],
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": " ".join([
-            TASKS_SCOPE if config.get("target_service", "tasks") == "tasks" else CALENDAR_SCOPE,
-            "openid", "email",
-        ]),
+        "scope": " ".join([required_google_scope(config), "openid", "email"]),
         "access_type": "offline",
         "prompt": "consent",
         "state": state,
@@ -950,10 +1332,16 @@ def run_auth_flow(config: dict[str, Any]) -> None:
     }
     auth_url = f"{OAUTH_AUTH_URL}?{urllib.parse.urlencode(query)}"
 
-    print("Authorize directly with Google using your own OAuth client.")
+    print(
+        tr(
+            "Sign in with Google in your browser. Keep the Google Tasks permission checked.",
+            "请在浏览器中登录 Google，并保持勾选 Google Tasks 权限。",
+        ),
+        flush=True,
+    )
     if config.get("manual_oauth_browser") or not open_auth_url(auth_url):
-        print("Open this URL manually:")
-        print(auth_url)
+        print(tr("Open this URL manually:", "请手动打开这个网址："), flush=True)
+        print(auth_url, flush=True)
 
     timeout_seconds = max(60, int(config.get("auto_reauth_timeout_seconds") or 300))
     deadline = time.monotonic() + timeout_seconds
@@ -968,7 +1356,12 @@ def run_auth_flow(config: dict[str, Any]) -> None:
     if result.get("state") != state:
         raise SystemExit("OAuth state mismatch; refusing to save token.")
     if result.get("error"):
-        raise SystemExit(f"OAuth error: {result['error']}")
+        raise SystemExit(
+            tr(
+                f"Google sign-in was not completed ({result['error']}).",
+                f"Google 登录未完成（{result['error']}）。",
+            )
+        )
     if not result.get("code"):
         raise SystemExit("OAuth callback did not include an authorization code.")
 
@@ -986,11 +1379,35 @@ def run_auth_flow(config: dict[str, Any]) -> None:
         token = post_form(OAUTH_TOKEN_URL, fields)
     except OAuthTokenError as exc:
         raise SystemExit(str(exc)) from exc
+    granted = token_granted_scopes(token)
+    if granted and required_google_scope(config) not in granted:
+        # Google's consent screen lets people untick individual permissions.
+        raise SystemExit(
+            tr(
+                "Google did not grant access to Google Tasks. Sign in again and leave the "
+                "\"Create, edit, organize, and delete all your tasks\" permission checked.",
+                "Google 没有授予 Google Tasks 权限。请重新登录，并保持勾选"
+                "“创建、修改、整理和删除你的所有任务”这一项。",
+            )
+        )
     token["created_at"] = int(time.time())
     token["expires_at"] = int(time.time()) + int(token.get("expires_in", 3600)) - 60
     token["_credential_source"] = "local_oauth"
+    token["_oauth_client_mode"] = client_mode
+    token["client_id"] = credentials["client_id"]
+    if credentials.get("client_secret"):
+        token["client_secret"] = credentials["client_secret"]
+    subject = google_account_subject(token)
+    if subject:
+        token["_account_subject"] = subject
     write_json_atomic(token_path, token)
-    print(f"Saved Google OAuth token: {token_path}")
+    print(tr(f"Saved Google OAuth token: {token_path}", f"已保存 Google OAuth 令牌：{token_path}"), flush=True)
+    claims = decode_jwt_payload(str(token.get("id_token") or ""))
+    return {
+        "client_mode": client_mode,
+        "account_email": " ".join(str(claims.get("email") or "").split()),
+        "account_fingerprint": sha256_text(f"google-openid-sub\n{subject}", 12) if subject else "",
+    }
 
 
 def same_refresh_token(left: dict[str, Any], right: dict[str, Any]) -> bool:

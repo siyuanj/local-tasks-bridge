@@ -1,16 +1,23 @@
+from __future__ import annotations
+
 import unittest
 import contextlib
 import datetime as dt
 import io
 import json
 import os
-from pathlib import Path
 import stat
 import subprocess
 import tempfile
 from unittest import mock
 
-import icloud_reminders_google_sync as sync
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "engine"))
+
+import local_tasks_bridge as sync  # noqa: E402
 
 
 REAL_LAUNCH_MUTATION_APPROVAL_DIALOG = sync.launch_mutation_approval_dialog
@@ -346,7 +353,7 @@ class SyncCadenceTests(unittest.TestCase):
 
 class GoogleTasksDueTests(unittest.TestCase):
     def test_reminders_apply_uses_stable_list_id_without_unsafe_title_fallback(self) -> None:
-        source = (Path(__file__).resolve().parent / "RemindersApply.swift").read_text(encoding="utf-8")
+        source = (ROOT / "macos" / "Helpers" / "RemindersApply.swift").read_text(encoding="utf-8")
 
         self.assertIn("var calendarsByIdentifier: [String: EKCalendar]", source)
         self.assertIn("targetCalendar = calendarsByIdentifier[listID]", source)
@@ -355,7 +362,7 @@ class GoogleTasksDueTests(unittest.TestCase):
         self.assertIn('missingReason = titleMatches.isEmpty ? "list_title_not_found" : "ambiguous_list_title"', source)
 
     def test_setup_keeps_launch_agent_logs_private_and_bounded(self) -> None:
-        setup_source = (Path(__file__).resolve().parent / "setup-new-mac.sh").read_text(encoding="utf-8")
+        setup_source = (ROOT / "setup-new-mac.sh").read_text(encoding="utf-8")
         self.assertIn('ICLOUD_SYNC_LOG_MAX_BYTES:-5242880', setup_source)
         self.assertIn('chmod 600 "$log_path"', setup_source)
         self.assertIn('mv "$log_path" "${log_path}.1"', setup_source)
@@ -372,7 +379,7 @@ class GoogleTasksDueTests(unittest.TestCase):
         self.assertIn('chmod 700 "$LOG_DIR"', setup_source)
 
     def test_setup_does_not_embed_a_maintainer_google_cloud_project(self) -> None:
-        setup_source = (Path(__file__).resolve().parent / "setup-new-mac.sh").read_text(encoding="utf-8")
+        setup_source = (ROOT / "setup-new-mac.sh").read_text(encoding="utf-8")
         self.assertIn('GCP_PROJECT="${GCP_PROJECT:-}"', setup_source)
         self.assertIn('if [ -n "$GCP_PROJECT" ]; then', setup_source)
         self.assertNotRegex(setup_source, r'GCP_PROJECT="\$\{GCP_PROJECT:-[^}]')
@@ -636,7 +643,7 @@ class GoogleTasksDueTests(unittest.TestCase):
                 sync.management_reconnect(sync.default_config(), mock.Mock(yes=True))
 
     def test_release_installs_the_management_launcher_from_the_stable_runtime(self) -> None:
-        root = Path(__file__).resolve().parent
+        root = ROOT
         setup_source = (root / "setup-new-mac.sh").read_text(encoding="utf-8")
         bundle_source = (root / "make-migration-bundle.sh").read_text(encoding="utf-8")
         launcher_source = (root / "google-tasks-manager.command").read_text(encoding="utf-8")
@@ -2471,7 +2478,7 @@ class MutationPlanTests(unittest.TestCase):
         self.assertEqual(outbound, [])
 
 
-SETUP_PATH = Path(__file__).resolve().parent / "setup-new-mac.sh"
+SETUP_PATH = ROOT / "setup-new-mac.sh"
 
 
 def setup_shell_function(name: str) -> str:

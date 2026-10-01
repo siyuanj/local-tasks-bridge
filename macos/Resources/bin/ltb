@@ -1,0 +1,127 @@
+#!/bin/bash
+# ltb: command-line interface to the Local Tasks Bridge engine.
+#
+# Lives at "Local Tasks Bridge.app/Contents/Resources/bin/ltb" and is usually
+# reached through a symlink such as ~/.local/bin/ltb. It resolves its real
+# location, picks Python the same way the app does (docs/app-engine-contract.md,
+# section 2), and runs the engine shipped next to it. In a source checkout
+# (macos/Resources/bin/ltb) it runs engine/local_tasks_bridge.py instead.
+set -euo pipefail
+
+real_path() {
+    local path="$1" dir target
+    while [ -L "$path" ]; do
+        dir="$(cd -P "$(dirname "$path")" && pwd)"
+        target="$(readlink "$path")"
+        case "$target" in
+            /*) path="$target" ;;
+            *) path="$dir/$target" ;;
+        esac
+    done
+    dir="$(cd -P "$(dirname "$path")" && pwd)"
+    printf '%s/%s\n' "$dir" "$(basename "$path")"
+}
+
+wants_chinese() {
+    local name value
+    for name in LTB_LANG LC_ALL LC_MESSAGES LANG; do
+        value="$(printenv "$name" 2>/dev/null || true)"
+        case "$value" in
+            zh* | ZH*) return 0 ;;
+            en* | EN*) return 1 ;;
+            "" | C | C.* | POSIX | POSIX.*) ;;
+            *)
+                # Any other explicit LTB_LANG means English, as in the engine.
+                if [ "$name" = "LTB_LANG" ]; then
+                    return 1
+                fi
+                ;;
+        esac
+    done
+    value="$(/usr/bin/defaults read -g AppleLanguages 2>/dev/null | sed -n '2p' || true)"
+    case "$value" in
+        *zh*) return 0 ;;
+    esac
+    return 1
+}
+
+fail() {
+    # $1: English message, $2: Chinese message.
+    if wants_chinese; then
+        printf '%s\n' "$2" >&2
+    else
+        printf '%s\n' "$1" >&2
+    fi
+    exit 1
+}
+
+python_ok() {
+    [ -n "$1" ] && [ -f "$1" ] && [ -x "$1" ] &&
+        "$1" -I -B -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1
+}
+
+find_python() {
+    local candidate
+    if [ -n "${LTB_PYTHON:-}" ]; then
+        candidate="$LTB_PYTHON"
+        case "$candidate" in
+            */*) ;;
+            *) candidate="$(command -v "$candidate" 2>/dev/null || true)" ;;
+        esac
+        if python_ok "$candidate"; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+        printf 'ltb: ignoring LTB_PYTHON=%s (not an executable Python 3.9 or newer)\n' "$LTB_PYTHON" >&2
+    fi
+    if [ -n "$bundle" ] && python_ok "$bundle/Contents/Resources/python/bin/python3"; then
+        printf '%s\n' "$bundle/Contents/Resources/python/bin/python3"
+        return 0
+    fi
+    # /usr/bin/python3 is only a shim until the Command Line Tools are installed;
+    # running it without them would pop up the installer.
+    if /usr/bin/xcode-select -p >/dev/null 2>&1 && python_ok /usr/bin/python3; then
+        printf '%s\n' /usr/bin/python3
+        return 0
+    fi
+    for candidate in /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+        if python_ok "$candidate"; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+self="$(real_path "${BASH_SOURCE[0]}")"
+resources_dir="$(dirname "$(dirname "$self")")"
+bundle=""
+engine="$resources_dir/engine/local_tasks_bridge.py"
+if [ -f "$engine" ] && [ "$(basename "$(dirname "$resources_dir")")" = "Contents" ]; then
+    bundle="$(dirname "$(dirname "$resources_dir")")"
+else
+    engine="$(dirname "$(dirname "$resources_dir")")/engine/local_tasks_bridge.py"
+fi
+
+if [ ! -f "$engine" ]; then
+    fail "ltb: the Local Tasks Bridge engine is missing ($engine). Reinstall Local Tasks Bridge." \
+        "ltb：缺少 Local Tasks Bridge 引擎（$engine）。请重新安装 Local Tasks Bridge。"
+fi
+
+if ! python="$(find_python)"; then
+    fail "Local Tasks Bridge needs Python 3.9 or newer, and none was found.
+Install Apple's Command Line Tools with:  xcode-select --install
+or install Python from https://www.python.org/downloads/ or Homebrew, then try again.
+To use a specific interpreter, set LTB_PYTHON=/path/to/python3." \
+        "Local Tasks Bridge 需要 Python 3.9 或更高版本，但没有找到。
+请运行  xcode-select --install  安装 Apple 命令行工具，
+或从 https://www.python.org/downloads/ 或 Homebrew 安装 Python 后重试。
+如需指定解释器，请设置 LTB_PYTHON=/path/to/python3。"
+fi
+
+if [ -n "$bundle" ]; then
+    export LTB_APP_BUNDLE="$bundle"
+fi
+# -I: ignore PYTHON* variables and user site-packages; -B: never write
+# bytecode into the (signed) app bundle.
+exec "$python" -I -B "$engine" "$@"

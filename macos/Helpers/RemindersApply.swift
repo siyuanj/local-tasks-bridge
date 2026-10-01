@@ -139,7 +139,7 @@ func applyFields(to reminder: EKReminder, operation: [String: Any]) {
 }
 
 func result(for reminder: EKReminder, status: String, stableID requestedStableID: String = "") -> [String: Any] {
-    let itemIdentifier = reminder.calendarItemIdentifier ?? ""
+    let itemIdentifier = reminder.calendarItemIdentifier
     let externalIdentifier = reminder.calendarItemExternalIdentifier ?? ""
     let stableID = !externalIdentifier.isEmpty ? externalIdentifier : (!itemIdentifier.isEmpty ? itemIdentifier : requestedStableID)
     let calendar = reminder.calendar

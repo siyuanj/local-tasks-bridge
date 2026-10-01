@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Used only when scripts/build-app.sh signs with a Developer ID identity, which
+  turns on the hardened runtime. Under the hardened runtime macOS denies EventKit
+  access without asking unless the process carries this resource-access
+  entitlement, and Reminders is covered by the Calendars entitlement. The app and
+  both Reminders helpers are signed with it. Ad-hoc builds do not enable the
+  hardened runtime and need no entitlements.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.personal-information.calendars</key>
+	<true/>
+</dict>
+</plist>

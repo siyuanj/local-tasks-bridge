@@ -1,0 +1,4 @@
+/* Shown by macOS when Local Tasks Bridge asks for access to Reminders. */
+"NSRemindersUsageDescription" = "Local Tasks Bridge needs access to Reminders to sync the lists you choose with Google Tasks.";
+"NSRemindersFullAccessUsageDescription" = "Local Tasks Bridge needs access to Reminders to sync the lists you choose with Google Tasks.";
+"NSHumanReadableCopyright" = "Copyright © 2026 Syncweave Labs contributors and Siyuan Jiang. MIT License.";

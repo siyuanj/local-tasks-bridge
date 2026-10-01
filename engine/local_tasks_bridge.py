@@ -7909,12 +7909,12 @@ def cmd_signout(args: argparse.Namespace) -> None:
 
 
 def cmd_sync(args: argparse.Namespace) -> None:
-    as_json = json_mode(args)
-    config = load_cli_config(args) if as_json else load_config(args)
-    if not as_json:
-        apply_network_config(config)
-
     def handler() -> dict[str, Any]:
+        if json_mode(args):
+            config = load_cli_config(args)
+        else:
+            config = load_config(args)
+            apply_network_config(config)
         summary = sync_once(config, dry_run=bool(args.dry_run is True))
         return {
             "dry_run": bool(args.dry_run is True),

@@ -3544,7 +3544,7 @@ def cmd_gcloud_login(args: argparse.Namespace) -> None:
             "Create a Desktop OAuth client JSON and save it here first:\n"
             f"  {credentials_path}\n"
             "Then rerun:\n"
-            "  python3 icloud_reminders_google_sync.py gcloud-login\n"
+            "  ltb gcloud-login\n"
             "Google's own gcloud help documents this requirement for non-Google-Cloud scopes."
         )
 
@@ -3841,21 +3841,24 @@ def doctor_next_step(
 
 
 def run_online_doctor_checks(config: dict[str, Any]) -> None:
-    print("Online Google checks:")
+    print(tr("Online Google checks:", "在线 Google 检查："))
     result = check_google_connection(config)
     if result["state"] == "ok":
-        print("  Google auth refresh: ok")
+        print(tr("  Google auth refresh: ok", "  Google 授权刷新：正常"))
         if config["target_service"] == "tasks":
-            print("  Google Tasks API: ok")
+            print(tr("  Google Tasks API: ok", "  Google Tasks API：正常"))
     elif result["state"] == "auth_required":
         if result.get("source") == "google_api":
             print(f"  Google API: {result['message']}")
         else:
-            print("  Google auth refresh: authorization required")
+            print(tr("  Google auth refresh: sign-in required", "  Google 授权刷新：需要重新登录"))
     elif result["state"] == "api_error":
         print(f"  Google API: {result['message']}")
     else:
-        print("  Google checks: unavailable; review the private log and retry later")
+        print(tr(
+            "  Google checks: unavailable; check the network or proxy and retry later",
+            "  Google 检查：暂时不可用；请检查网络或代理后重试",
+        ))
 
 
 def check_google_connection(config: dict[str, Any]) -> dict[str, Any]:
@@ -3878,14 +3881,14 @@ def check_google_connection(config: dict[str, Any]) -> dict[str, Any]:
             "source": "google_api",
             "tasklist_count": tasklist_count,
             **identity,
-            "message": "Google connection is healthy.",
+            "message": tr("Google connection is healthy.", "Google 连接正常。"),
         }
     except AuthenticationRequired:
         return {
             "state": "auth_required",
             "source": "oauth",
             "tasklist_count": 0,
-            "message": "Google authorization has expired or was revoked.",
+            "message": tr("Google authorization has expired or was revoked.", "Google 授权已过期或已被撤销。"),
         }
     except OAuthTokenError as exc:
         return {"state": "auth_required", "source": "oauth", "tasklist_count": 0, "message": str(exc)}
@@ -3902,14 +3905,14 @@ def check_google_connection(config: dict[str, Any]) -> dict[str, Any]:
             "state": "auth_required",
             "source": "oauth",
             "tasklist_count": 0,
-            "message": "Google authorization material is missing or invalid.",
+            "message": tr("Google sign-in information is missing or invalid.", "缺少 Google 登录信息，或信息无效。"),
         }
     except (OSError, json.JSONDecodeError, ValueError):
         return {
             "state": "unavailable",
             "source": "network",
             "tasklist_count": 0,
-            "message": "Google could not be reached safely. Retry after checking the network.",
+            "message": message_network(),
         }
 
 
@@ -5632,20 +5635,29 @@ def run_tasks_sync(config: dict[str, Any], dry_run: bool = False) -> dict[str, A
                 "Bidirectional conflicts left Apple Reminders and Google Tasks unsynced. "
                 "Resolve the conflicts or use conflict_policy=newer_wins."
             )
-        outbound_desired_by_list = {
-            list_title: desired
-            for list_title, desired in desired_by_list.items()
-            if list_allows_apple_to_google(config, list_title) and list_title in tasklists
-        }
-        verify_google_tasks_title_due_consistency(
-            client,
-            outbound_desired_by_list,
-            tasklists,
-            blocked,
-            recently_synced_task_ids=recently_synced_task_ids,
-            retry_attempts=int(config.get("verify_title_due_retry_attempts") or 1),
-            retry_delay_seconds=float(config.get("verify_title_due_retry_delay_seconds") or 0.0),
+        google_writes = (
+            inserted + updated + completed + deleted + duplicate_deleted
+            + google_applied + bidir_initialized + len(missing_tasklists)
         )
+        if google_writes:
+            outbound_desired_by_list = {
+                list_title: desired
+                for list_title, desired in desired_by_list.items()
+                if list_allows_apple_to_google(config, list_title) and list_title in tasklists
+            }
+            verify_google_tasks_title_due_consistency(
+                client,
+                outbound_desired_by_list,
+                tasklists,
+                blocked,
+                recently_synced_task_ids=recently_synced_task_ids,
+                retry_attempts=int(config.get("verify_title_due_retry_attempts") or 1),
+                retry_delay_seconds=float(config.get("verify_title_due_retry_delay_seconds") or 0.0),
+            )
+        else:
+            # Every item already matched the snapshot read this cycle, so a
+            # second full read would only spend Tasks API quota.
+            print("Google Tasks title/due consistency: no writes this cycle; re-read skipped.")
 
     if not dry_run:
         write_json_atomic(state_path, state)
@@ -7179,12 +7191,43 @@ def cmd_run_loop(args: argparse.Namespace) -> None:
             loop_log.close()
 
 
+SHARED_CLIENT_MIN_INTERVAL_SECONDS = 300
+SHARED_CLIENT_MIN_TRIGGER_SECONDS = 30
+
+
+def signed_in_with_shared_client(config: dict[str, Any]) -> bool:
+    """Whether the current Google token was issued to the bundled OAuth client."""
+
+    token_path = expand_path(config["token_path"])
+    with contextlib.suppress(OSError, json.JSONDecodeError, AttributeError):
+        mode = str(read_json(token_path).get("_oauth_client_mode") or "")
+        if mode:
+            return mode == "bundled"
+    return oauth_client_status(config)["active"] == "bundled"
+
+
+def effective_scheduler_timing(config: dict[str, Any]) -> tuple[int, int]:
+    """(interval, minimum gap between triggered cycles) for this sign-in.
+
+    Everyone signed in through the shared client shares one Google Tasks API
+    quota, so their scheduler polls Google at most every five minutes. Local
+    edits still trigger a sync within seconds through sync-now.
+    """
+
+    interval = int(config["sync_interval_seconds"])
+    trigger_gap = int(config.get("trigger_min_interval_seconds") or 0)
+    if signed_in_with_shared_client(config):
+        interval = max(interval, SHARED_CLIENT_MIN_INTERVAL_SECONDS)
+        trigger_gap = max(trigger_gap, SHARED_CLIENT_MIN_TRIGGER_SECONDS)
+    return interval, trigger_gap
+
+
 def run_scheduler(args: argparse.Namespace, loop_log: LoopLog | None) -> None:
     config = load_config(args)
     apply_network_config(config)
-    interval = int(config["sync_interval_seconds"])
-    if interval < MIN_SYNC_INTERVAL_SECONDS:
+    if int(config["sync_interval_seconds"]) < MIN_SYNC_INTERVAL_SECONDS:
         raise SystemExit("sync_interval_seconds must be at least 60.")
+    interval, config["trigger_min_interval_seconds"] = effective_scheduler_timing(config)
 
     lock_handle = acquire_loop_lock(config)
     if lock_handle is None:
@@ -7464,6 +7507,7 @@ def status_payload(config: dict[str, Any]) -> dict[str, Any]:
         "token_ready": snapshot["auth_material_ready"],
         "include_lists": list(config.get("include_lists") or []),
         "sync_interval_seconds": int(config["sync_interval_seconds"]),
+        "effective_sync_interval_seconds": effective_scheduler_timing(config)[0],
         "loop_running": bool(snapshot["agent_loaded"]),
         "agent": {
             "installed": snapshot["launch_agent_installed"],

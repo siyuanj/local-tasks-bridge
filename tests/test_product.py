@@ -562,6 +562,58 @@ class SchedulerControlTests(unittest.TestCase):
             self.assertTrue(sync.sync_paused(config))
 
 
+class QuotaFriendlySchedulingTests(unittest.TestCase):
+    def orchestrate(self, existing_matches: bool) -> mock.Mock:
+        with tempfile.TemporaryDirectory() as directory:
+            config = sync.default_config()
+            config.update(
+                state_path=str(Path(directory) / "state.json"),
+                bidirectional=False,
+                verify_title_due_after_sync=True,
+                verify_title_due_retry_delay_seconds=0,
+            )
+            reminder = {
+                "stable_id": "r1", "title": "Synthetic", "notes": "", "list_title": "Trial",
+                "list_id": "apple-list", "account_id": "synthetic-account", "due_date": "2026-10-01",
+                "due_at": None, "all_day": True, "is_completed": False,
+                "modified_at": "2026-10-01T00:00:00Z", "completed_at": None,
+            }
+            uid, body, digest = sync.build_task(reminder, config)
+            tasks = [{**body, "id": "t1", "status": "needsAction"}] if existing_matches else []
+            client = mock.Mock()
+            client.insert_task.return_value = {**body, "id": "t-new", "status": "needsAction"}
+            binding = {"version": 1, "apple": "a", "google": "g"}
+            with contextlib.ExitStack() as stack:
+                def patch(name: str, **kwargs: object) -> mock.Mock:
+                    return stack.enter_context(mock.patch.object(sync, name, **kwargs))
+
+                patch("build_desired_tasks", return_value=([reminder], {"Trial": {uid: (body, digest, reminder)}}, 0))
+                patch("build_completed_tasks", return_value=([], {}, 0))
+                patch("resolve_sync_account_binding", return_value=binding)
+                patch("GoogleTasksClient", return_value=client)
+                patch("inspect_tasklists_for_desired", return_value=({"Trial": "google-list"}, []))
+                patch("list_task_snapshot", return_value=(tasks, []))
+                verify = patch("verify_google_tasks_title_due_consistency", return_value=1)
+                stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+                sync.run_tasks_sync(config)
+            return verify
+
+    def test_idle_cycles_skip_the_second_read_but_writes_are_verified(self) -> None:
+        self.assertEqual(self.orchestrate(existing_matches=True).call_count, 0)
+        self.assertEqual(self.orchestrate(existing_matches=False).call_count, 1)
+
+    def test_shared_client_polls_google_at_most_every_five_minutes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_name:
+            base = Path(tmp_name)
+            config = isolated_config(base, sync_interval_seconds=60, trigger_min_interval_seconds=10)
+            (base / "token.json").write_text(json.dumps({"_oauth_client_mode": "custom"}), encoding="utf-8")
+            self.assertEqual(sync.effective_scheduler_timing(config), (60, 10))
+            (base / "token.json").write_text(json.dumps({"_oauth_client_mode": "bundled"}), encoding="utf-8")
+            self.assertEqual(sync.effective_scheduler_timing(config), (300, 30))
+            config["sync_interval_seconds"] = 900
+            self.assertEqual(sync.effective_scheduler_timing(config)[0], 900)
+
+
 def argparse_namespace(**values: object):
     import argparse
 

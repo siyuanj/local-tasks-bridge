@@ -248,9 +248,13 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
     }
 
     @objc private func reviewChanges() { windows.showApprovals() }
-    @objc private func reconnectGoogle() { windows.showSettings(tab: .google, reconnect: true) }
+    @objc private func reconnectGoogle() {
+        // A changed account needs a rebuilt sync map; an expired sign-in only a new sign-in.
+        let action: SettingsModel.Action = model.status?.condition == "account_binding_required" ? .rebuild : .reconnect
+        windows.showSettings(tab: .google, action: action)
+    }
     @objc private func openSetup() { windows.showSetup() }
-    @objc private func openSettings() { windows.showSettings(tab: nil, reconnect: false) }
+    @objc private func openSettings() { windows.showSettings() }
     @objc private func openGoogleTasks() { NSWorkspace.shared.open(AppInfo.googleTasksURL) }
     @objc private func openReminders() { SystemActions.openReminders() }
     @objc private func openLogs() { SystemActions.openLogs(paths: model.paths) }

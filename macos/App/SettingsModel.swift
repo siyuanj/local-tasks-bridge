@@ -10,6 +10,13 @@ final class SettingsModel: ObservableObject {
         case general, lists, safety, google, network, advanced
     }
 
+    /// What to start when Settings opens from the menu.
+    enum Action {
+        case none
+        case reconnect
+        case rebuild
+    }
+
     let app: AppModel
     let lists: ListSelectionModel
     /// Opens the uninstall window; set by the window coordinator.
@@ -58,14 +65,37 @@ final class SettingsModel: ObservableObject {
         self.commandLineToolInstalled = CommandLineTool.isInstalled(at: app.paths.commandLineToolLink)
     }
 
-    /// Switches to `tab` and, if asked, starts "Reconnect Google".
-    func open(tab: Tab?, reconnect: Bool) {
+    /// The "pair accounts again" sheet, while it is shown.
+    @Published private(set) var rebuildModel: RebuildModel?
+
+    /// Switches to `tab` and starts `action`.
+    func open(tab: Tab?, action: Action = .none) {
         if let tab {
             self.tab = tab
         }
-        if reconnect && !signingIn {
-            self.reconnect()
+        switch action {
+        case .reconnect where !signingIn:
+            reconnect()
+        case .rebuild:
+            openRebuild()
+        default:
+            break
         }
+    }
+
+    func openRebuild() {
+        guard rebuildModel == nil else {
+            return
+        }
+        let rebuild = RebuildModel(app: app)
+        rebuild.close = { [weak self] in self?.closeRebuild() }
+        rebuildModel = rebuild
+    }
+
+    func closeRebuild() {
+        rebuildModel?.cancelWork()
+        rebuildModel = nil
+        app.scheduleStatusRefresh()
     }
 
     // MARK: Loading
@@ -387,5 +417,6 @@ final class SettingsModel: ObservableObject {
 
     func cancelWork() {
         signInTask?.cancel()
+        rebuildModel?.cancelWork()
     }
 }

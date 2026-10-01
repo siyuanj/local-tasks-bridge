@@ -210,6 +210,42 @@ struct ProxyEditor: View {
     }
 }
 
+/// What a sync plan will do, as in the first sync and the rebuild preview.
+struct PlanSummaryView: View {
+    var plan: SyncPlan
+    var heading: String
+    var noDeletionNote: String
+
+    var body: some View {
+        let summary = PlanSummary(plan: plan)
+        VStack(alignment: .leading, spacing: 6) {
+            if summary.isEmpty {
+                Label(NSLocalizedString("Everything is already in sync.", comment: "First sync summary"), systemImage: "checkmark.circle")
+            } else {
+                Text(heading).font(.headline)
+                ForEach(summary.lines, id: \.self) { line in
+                    Label(line, systemImage: "circle.fill")
+                        .labelStyle(BulletLabelStyle())
+                }
+            }
+            if summary.deletions == 0 {
+                Label(noDeletionNote, systemImage: "checkmark.shield")
+                    .foregroundColor(.green)
+                    .padding(.top, 4)
+            }
+        }
+    }
+}
+
+struct BulletLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            configuration.icon.font(.system(size: 5)).foregroundColor(.secondary)
+            configuration.title
+        }
+    }
+}
+
 /// Reminders lists to sync, with their Google Tasks counterparts.
 struct ListPickerView: View {
     @ObservedObject var model: ListSelectionModel

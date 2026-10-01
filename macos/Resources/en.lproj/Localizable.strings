@@ -25,6 +25,7 @@
 "Allow access to Reminders" = "Allow access to Reminders";
 "Allow Access…" = "Allow Access…";
 "An earlier installation was found" = "An earlier installation was found";
+"Apple Reminders accounts" = "Apple Reminders accounts";
 "Apply" = "Apply";
 "Apply %d Changes" = "Apply %d Changes";
 "Apply 1 Change" = "Apply 1 Change";
@@ -39,6 +40,7 @@
 "Check for Updates…" = "Check for Updates…";
 "Check Reminders Access" = "Check Reminders Access";
 "Checking status…" = "Checking status…";
+"Checking the accounts…" = "Checking the accounts…";
 "Checking what needs your approval…" = "Checking what needs your approval…";
 "Checking what the first sync will do…" = "Checking what the first sync will do…";
 "Checking your Google account…" = "Checking your Google account…";
@@ -87,6 +89,7 @@
 "GitHub answered with status %d." = "GitHub answered with status %d.";
 "GitHub is limiting requests right now. Try again later." = "GitHub is limiting requests right now. Try again later.";
 "Google" = "Google";
+"Google account" = "Google account";
 "Google can’t be reached right now. Check your internet connection and proxy settings." = "Google can’t be reached right now. Check your internet connection and proxy settings.";
 "Google Tasks lists couldn’t be loaded: %@" = "Google Tasks lists couldn’t be loaded: %@";
 "Google Tasks lists without a matching Reminders list" = "Google Tasks lists without a matching Reminders list";
@@ -158,10 +161,12 @@
 "No OAuth client is set up yet." = "No OAuth client is set up yet.";
 "No release found" = "No release found";
 "No release has been published on GitHub yet." = "No release has been published on GitHub yet.";
+"None found" = "None found";
 "Not found in Reminders" = "Not found in Reminders";
 "Not installed" = "Not installed";
 "Not synced yet" = "Not synced yet";
 "Nothing needs your approval right now." = "Nothing needs your approval right now.";
+"Nothing will be deleted on either side." = "Nothing will be deleted on either side.";
 "Nothing will be deleted on the first sync." = "Nothing will be deleted on the first sync.";
 "Notifications for Local Tasks Bridge are turned off in System Settings." = "Notifications for Local Tasks Bridge are turned off in System Settings.";
 "OK" = "OK";
@@ -174,10 +179,14 @@
 "Open Settings from the menu to change lists, options, or the Google account." = "Open Settings from the menu to change lists, options, or the Google account.";
 "Open System Settings" = "Open System Settings";
 "Options" = "Options";
+"Pair Accounts Again…" = "Pair Accounts Again…";
+"Pair Your Accounts Again" = "Pair Your Accounts Again";
 "Parts of the app are missing. Download Local Tasks Bridge again and replace this copy." = "Parts of the app are missing. Download Local Tasks Bridge again and replace this copy.";
 "Paste" = "Paste";
 "Paste them into a bug report. They contain no reminder or task titles." = "Paste them into a bug report. They contain no reminder or task titles.";
 "Pause Sync" = "Pause Sync";
+"Preview" = "Preview";
+"Preview the rebuild to see what it will add or update." = "Preview the rebuild to see what it will add or update.";
 "Privacy Policy" = "Privacy Policy";
 "Private by design" = "Private by design";
 "Python 3.9 or newer is required." = "Python 3.9 or newer is required.";
@@ -185,6 +194,8 @@
 "Quick sign-in (recommended)" = "Quick sign-in (recommended)";
 "Quick sign-in (shared Local Tasks Bridge client)" = "Quick sign-in (shared Local Tasks Bridge client)";
 "Quit Local Tasks Bridge" = "Quit Local Tasks Bridge";
+"Rebuild" = "Rebuild";
+"Rebuilding the sync map…" = "Rebuilding the sync map…";
 "Reconnect Google" = "Reconnect Google";
 "Reconnect Google…" = "Reconnect Google…";
 "Redo" = "Redo";
@@ -210,6 +221,7 @@
 "Show notifications" = "Show notifications";
 "Sign In" = "Sign In";
 "Sign In Again" = "Sign In Again";
+"Sign in first so Local Tasks Bridge knows which Google account to pair." = "Sign in first so Local Tasks Bridge knows which Google account to pair.";
 "Sign in to Google" = "Sign in to Google";
 "Sign in to Google again to keep syncing." = "Sign in to Google again to keep syncing.";
 "Sign In with Google" = "Sign In with Google";
@@ -245,11 +257,14 @@
 "The new language is used after Local Tasks Bridge restarts." = "The new language is used after Local Tasks Bridge restarts.";
 "The newer change wins" = "The newer change wins";
 "The pending changes are different now. Review them again." = "The pending changes are different now. Review them again.";
+"The rebuild will:" = "The rebuild will:";
 "The shared sign-in has one daily Google quota for everyone who uses it, so every 5 minutes is recommended." = "The shared sign-in has one daily Google quota for everyone who uses it, so every 5 minutes is recommended.";
 "The sync engine could not be started." = "The sync engine could not be started.";
 "The sync engine did not understand the request. Reinstall Local Tasks Bridge so the app and engine match." = "The sync engine did not understand the request. Reinstall Local Tasks Bridge so the app and engine match.";
 "The sync engine returned an unexpected response." = "The sync engine returned an unexpected response.";
 "The sync engine took too long to respond." = "The sync engine took too long to respond.";
+"The sync map on this Mac belongs to a different pair of Apple and Google accounts, so syncing stopped to keep your data safe. Rebuilding pairs the accounts below with one safe sync. Nothing is deleted on either side." = "The sync map on this Mac belongs to a different pair of Apple and Google accounts, so syncing stopped to keep your data safe. Rebuilding pairs the accounts below with one safe sync. Nothing is deleted on either side.";
+"The sync map was rebuilt and syncing has resumed." = "The sync map was rebuilt and syncing has resumed.";
 "There are no lists in Reminders yet." = "There are no lists in Reminders yet.";
 "There is no Reminders account on this Mac to create the list in." = "There is no Reminders account on this Mac to create the list in.";
 "This copy of Local Tasks Bridge signs in with your own Google Cloud OAuth client. Creating one is free and takes about 10 minutes." = "This copy of Local Tasks Bridge signs in with your own Google Cloud OAuth client. Creating one is free and takes about 10 minutes.";
@@ -279,6 +294,7 @@
 "When you complete or delete an item on one side, the same happens on the other. For safety, if one sync would complete or delete more than %d items or %d%% of your synced items, those changes wait for your approval while everything else keeps syncing." = "When you complete or delete an item on one side, the same happens on the other. For safety, if one sync would complete or delete more than %d items or %d%% of your synced items, those changes wait for your approval while everything else keeps syncing.";
 "Will be created in Google Tasks" = "Will be created in Google Tasks";
 "Window" = "Window";
+"Working out what the rebuild will do…" = "Working out what the rebuild will do…";
 "You have version %@." = "You have version %@.";
 "Your browser opens Google’s sign-in page. Choose your account, keep the Google Tasks permission ticked, and come back here when Google says you can close the page." = "Your browser opens Google’s sign-in page. Choose your account, keep the Google Tasks permission ticked, and come back here when Google says you can close the page.";
 "Your Google sign-in and sync data stay in a private folder on this Mac." = "Your Google sign-in and sync data stay in a private folder on this Mac.";

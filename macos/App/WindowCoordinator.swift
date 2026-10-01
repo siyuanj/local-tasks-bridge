@@ -35,15 +35,15 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
         )
     }
 
-    /// Opens Settings, optionally on a tab and starting Google sign-in.
-    func showSettings(tab: SettingsModel.Tab? = nil, reconnect: Bool = false) {
+    /// Opens Settings, optionally on a tab and starting an action there.
+    func showSettings(tab: SettingsModel.Tab? = nil, action: SettingsModel.Action = .none) {
         if let settingsModel, bringToFront(.settings) {
-            settingsModel.open(tab: tab, reconnect: reconnect)
+            settingsModel.open(tab: tab, action: action)
             return
         }
         let settings = SettingsModel(app: model)
         settings.showUninstall = { [weak self] in self?.showUninstall() }
-        settings.open(tab: tab, reconnect: reconnect)
+        settings.open(tab: tab, action: action)
         settingsModel = settings
         present(
             .settings,

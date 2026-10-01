@@ -14,7 +14,7 @@ struct SettingsView: View {
             SafetySettings(model: model)
                 .tabItem { Label(NSLocalizedString("Safety", comment: "Settings tab"), systemImage: "checkmark.shield") }
                 .tag(SettingsModel.Tab.safety)
-            GoogleSettings(model: model)
+            GoogleSettings(model: model, app: model.app)
                 .tabItem { Label(NSLocalizedString("Google", comment: "Settings tab"), systemImage: "person.crop.circle") }
                 .tag(SettingsModel.Tab.google)
             NetworkSettings(model: model)
@@ -27,6 +27,18 @@ struct SettingsView: View {
         .padding(20)
         .frame(width: 660, height: 560)
         .task { await model.load() }
+        .sheet(isPresented: Binding(
+            get: { model.rebuildModel != nil },
+            set: { shown in
+                if !shown {
+                    model.closeRebuild()
+                }
+            }
+        )) {
+            if let rebuild = model.rebuildModel {
+                RebuildView(model: rebuild)
+            }
+        }
     }
 }
 
@@ -209,9 +221,16 @@ private struct SafetySettings: View {
 
 private struct GoogleSettings: View {
     @ObservedObject var model: SettingsModel
+    @ObservedObject var app: AppModel
 
     var body: some View {
         Form {
+            if app.status?.condition == "account_binding_required" {
+                Section {
+                    ErrorText(message: NSLocalizedString("The Apple or Google account is different from the one this Mac synced with before.", comment: "Engine error"))
+                    Button(NSLocalizedString("Pair Accounts Again…", comment: "Button")) { model.openRebuild() }
+                }
+            }
             Section(NSLocalizedString("Account", comment: "Settings section")) {
                 if model.checkingAccount {
                     HStack(spacing: 8) {

@@ -25,6 +25,7 @@
 "Allow access to Reminders" = "允许访问提醒事项";
 "Allow Access…" = "允许访问…";
 "An earlier installation was found" = "发现了旧的安装";
+"Apple Reminders accounts" = "Apple 提醒事项账户";
 "Apply" = "应用";
 "Apply %d Changes" = "执行 %d 项更改";
 "Apply 1 Change" = "执行 1 项更改";
@@ -39,6 +40,7 @@
 "Check for Updates…" = "检查更新…";
 "Check Reminders Access" = "检查提醒事项权限";
 "Checking status…" = "正在检查状态…";
+"Checking the accounts…" = "正在检查账号…";
 "Checking what needs your approval…" = "正在检查需要你确认的内容…";
 "Checking what the first sync will do…" = "正在检查第一次同步会做哪些更改…";
 "Checking your Google account…" = "正在检查你的 Google 账号…";
@@ -87,6 +89,7 @@
 "GitHub answered with status %d." = "GitHub 返回了状态码 %d。";
 "GitHub is limiting requests right now. Try again later." = "GitHub 暂时限制了请求，请稍后再试。";
 "Google" = "Google";
+"Google account" = "Google 账号";
 "Google can’t be reached right now. Check your internet connection and proxy settings." = "暂时无法连接 Google。请检查网络连接和代理设置。";
 "Google Tasks lists couldn’t be loaded: %@" = "无法载入 Google Tasks 列表：%@";
 "Google Tasks lists without a matching Reminders list" = "提醒事项中没有对应列表的 Google Tasks 列表";
@@ -158,10 +161,12 @@
 "No OAuth client is set up yet." = "尚未设置 OAuth 客户端。";
 "No release found" = "没有找到发布版本";
 "No release has been published on GitHub yet." = "GitHub 上还没有发布任何版本。";
+"None found" = "未找到";
 "Not found in Reminders" = "提醒事项中未找到";
 "Not installed" = "未安装";
 "Not synced yet" = "尚未同步";
 "Nothing needs your approval right now." = "目前没有需要你确认的更改。";
+"Nothing will be deleted on either side." = "两边都不会删除任何内容。";
 "Nothing will be deleted on the first sync." = "第一次同步不会删除任何内容。";
 "Notifications for Local Tasks Bridge are turned off in System Settings." = "Local Tasks Bridge 的通知已在“系统设置”中关闭。";
 "OK" = "好";
@@ -174,10 +179,14 @@
 "Open Settings from the menu to change lists, options, or the Google account." = "从菜单中打开“设置”，可以更改列表、选项或 Google 账号。";
 "Open System Settings" = "打开系统设置";
 "Options" = "选项";
+"Pair Accounts Again…" = "重新配对账号…";
+"Pair Your Accounts Again" = "重新配对账号";
 "Parts of the app are missing. Download Local Tasks Bridge again and replace this copy." = "应用缺少部分文件。请重新下载 Local Tasks Bridge 并替换当前这一份。";
 "Paste" = "粘贴";
 "Paste them into a bug report. They contain no reminder or task titles." = "可以将其粘贴到问题报告中。其中不包含提醒事项或任务的标题。";
 "Pause Sync" = "暂停同步";
+"Preview" = "预览";
+"Preview the rebuild to see what it will add or update." = "请先预览，看看重建会添加或更新哪些内容。";
 "Privacy Policy" = "隐私政策";
 "Private by design" = "从设计上保护隐私";
 "Python 3.9 or newer is required." = "需要 Python 3.9 或更高版本。";
@@ -185,6 +194,8 @@
 "Quick sign-in (recommended)" = "快速登录（推荐）";
 "Quick sign-in (shared Local Tasks Bridge client)" = "快速登录（共享的 Local Tasks Bridge 客户端）";
 "Quit Local Tasks Bridge" = "退出 Local Tasks Bridge";
+"Rebuild" = "重建";
+"Rebuilding the sync map…" = "正在重建同步对应关系…";
 "Reconnect Google" = "重新连接 Google";
 "Reconnect Google…" = "重新连接 Google…";
 "Redo" = "重做";
@@ -210,6 +221,7 @@
 "Show notifications" = "显示通知";
 "Sign In" = "登录";
 "Sign In Again" = "重新登录";
+"Sign in first so Local Tasks Bridge knows which Google account to pair." = "请先登录，以便 Local Tasks Bridge 知道要配对哪个 Google 账号。";
 "Sign in to Google" = "登录 Google";
 "Sign in to Google again to keep syncing." = "请重新登录 Google 以继续同步。";
 "Sign In with Google" = "使用 Google 登录";
@@ -245,11 +257,14 @@
 "The new language is used after Local Tasks Bridge restarts." = "重新启动 Local Tasks Bridge 后将使用新的语言。";
 "The newer change wins" = "以较新的更改为准";
 "The pending changes are different now. Review them again." = "待确认的更改已经变化，请重新查看。";
+"The rebuild will:" = "重建将会：";
 "The shared sign-in has one daily Google quota for everyone who uses it, so every 5 minutes is recommended." = "共享登录的所有用户共用一个 Google 每日配额，因此建议每 5 分钟同步一次。";
 "The sync engine could not be started." = "无法启动同步引擎。";
 "The sync engine did not understand the request. Reinstall Local Tasks Bridge so the app and engine match." = "同步引擎无法理解此请求。请重新安装 Local Tasks Bridge，使应用与引擎版本一致。";
 "The sync engine returned an unexpected response." = "同步引擎返回了意外的结果。";
 "The sync engine took too long to respond." = "同步引擎响应超时。";
+"The sync map on this Mac belongs to a different pair of Apple and Google accounts, so syncing stopped to keep your data safe. Rebuilding pairs the accounts below with one safe sync. Nothing is deleted on either side." = "这台 Mac 上的同步对应关系属于另一组 Apple 和 Google 账号，为保护你的数据，同步已停止。重建会通过一次安全同步，为下面的账号重新建立同步对应关系。两边都不会删除任何内容。";
+"The sync map was rebuilt and syncing has resumed." = "同步对应关系已重建，同步已恢复。";
 "There are no lists in Reminders yet." = "提醒事项中还没有列表。";
 "There is no Reminders account on this Mac to create the list in." = "这台 Mac 上没有可以创建列表的提醒事项账户。";
 "This copy of Local Tasks Bridge signs in with your own Google Cloud OAuth client. Creating one is free and takes about 10 minutes." = "这一份 Local Tasks Bridge 需要使用你自己的 Google Cloud OAuth 客户端登录。创建客户端是免费的，大约需要 10 分钟。";
@@ -279,6 +294,7 @@
 "When you complete or delete an item on one side, the same happens on the other. For safety, if one sync would complete or delete more than %d items or %d%% of your synced items, those changes wait for your approval while everything else keeps syncing." = "在一边完成或删除某个项目时，另一边也会同样处理。为安全起见，如果一次同步要完成或删除超过 %d 项、或超过已同步项目的 %d%%，这些更改会等待你确认，其余内容照常同步。";
 "Will be created in Google Tasks" = "将在 Google Tasks 中创建";
 "Window" = "窗口";
+"Working out what the rebuild will do…" = "正在计算重建会做哪些更改…";
 "You have version %@." = "你当前的版本是 %@。";
 "Your browser opens Google’s sign-in page. Choose your account, keep the Google Tasks permission ticked, and come back here when Google says you can close the page." = "浏览器会打开 Google 登录页面。请选择你的账号，保持勾选 Google Tasks 权限，等 Google 提示可以关闭页面后再回到这里。";
 "Your Google sign-in and sync data stay in a private folder on this Mac." = "你的 Google 登录信息和同步数据都保存在这台 Mac 上的私有文件夹中。";

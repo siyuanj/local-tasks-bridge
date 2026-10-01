@@ -397,21 +397,11 @@ private struct FirstSyncStep: View {
                 subtitle: NSLocalizedString("The first sync only adds and updates items, so you can check the result before deletions are synced.", comment: "Setup text")
             )
             if let plan = model.plan {
-                let summary = PlanSummary(plan: plan)
-                VStack(alignment: .leading, spacing: 6) {
-                    if summary.isEmpty {
-                        Label(NSLocalizedString("Everything is already in sync.", comment: "First sync summary"), systemImage: "checkmark.circle")
-                    } else {
-                        Text(NSLocalizedString("The first sync will:", comment: "First sync summary")).font(.headline)
-                        ForEach(summary.lines, id: \.self) { line in
-                            Label(line, systemImage: "circle.fill")
-                                .labelStyle(BulletLabelStyle())
-                        }
-                    }
-                    Label(NSLocalizedString("Nothing will be deleted on the first sync.", comment: "First sync summary"), systemImage: "checkmark.shield")
-                        .foregroundColor(.green)
-                        .padding(.top, 4)
-                }
+                PlanSummaryView(
+                    plan: plan,
+                    heading: NSLocalizedString("The first sync will:", comment: "First sync summary"),
+                    noDeletionNote: NSLocalizedString("Nothing will be deleted on the first sync.", comment: "First sync summary")
+                )
                 if AppInfo.runsFromTemporaryLocation {
                     ErrorText(message: NSLocalizedString("Local Tasks Bridge is running from a temporary location. Quit, move it to your Applications folder, and open it again; otherwise it can’t start at login.", comment: "Setup warning"))
                 }
@@ -420,15 +410,6 @@ private struct FirstSyncStep: View {
                     .keyboardShortcut(.defaultAction)
                     .disabled(model.working || AppInfo.runsFromTemporaryLocation)
             }
-        }
-    }
-}
-
-private struct BulletLabelStyle: LabelStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            configuration.icon.font(.system(size: 5)).foregroundColor(.secondary)
-            configuration.title
         }
     }
 }

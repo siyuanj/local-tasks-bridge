@@ -372,6 +372,11 @@ extension EngineClient {
         return try await request(SyncResponse.self, command + ["--json"], timeout: nil)
     }
 
+    /// Builds a new sync map for the accounts now in use (account_binding_required).
+    func rebuild(dryRun: Bool) async throws -> SyncResponse {
+        try await request(SyncResponse.self, ["rebuild", dryRun ? "--dry-run" : "--yes", "--json"], timeout: nil)
+    }
+
     func pause() async throws {
         _ = try await run(["pause", "--json"])
     }

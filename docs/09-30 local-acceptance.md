@@ -74,7 +74,7 @@ Swift invocation requires an explicit SDK; full Xcode was not installed.
 
 ```sh
 SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk \
-  /Users/jiangsiyuan/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+  "$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3" \
   -B icloud_reminders_google_sync.py \
   --config ~/.config/reminders-task-bridge-trial/config.json sync --dry-run
 ```

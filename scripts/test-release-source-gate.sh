@@ -3,7 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 GATE="${SCRIPT_DIR}/check-release-source.sh"
-EXPECTED_URL="https://github.com/syncweave-labs/reminders-task-bridge.git"
+EXPECTED_REPOSITORY="siyuanj/local-tasks-bridge"
+EXPECTED_URL="https://github.com/${EXPECTED_REPOSITORY}.git"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/icloud-sync-release-gate.XXXXXX")"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
@@ -91,7 +92,7 @@ BUNDLE_DIR="${TMP_ROOT}/bundle"
 mkdir -p "$BUNDLE_DIR"
 printf 'payload\n' >"${BUNDLE_DIR}/payload.txt"
 cat >"${BUNDLE_DIR}/release-source.txt" <<MANIFEST
-repository=syncweave-labs/reminders-task-bridge
+repository=${EXPECTED_REPOSITORY}
 branch=main
 commit=${UNPUSHED_COMMIT}
 MANIFEST

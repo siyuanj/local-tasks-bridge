@@ -1,8 +1,13 @@
-# iCloud Reminders ↔ Google Tasks 동기화
+# Local Tasks Bridge
+
+A local-first macOS bridge between Apple Reminders and Google Tasks. This
+repository is Siyuan Jiang's maintained product fork of
+`syncweave-labs/reminders-task-bridge`, with the original MIT license and
+copyright notice preserved.
 
 ## Local trial (2026-09-30)
 
-This checkout is a private local fork based on upstream commit
+This repository began as a private local fork based on upstream commit
 `3501800b672ef58c823eb0711c22412c2db98dce`; it is not an upstream release.
 Do not run the default installer for this trial. The reviewed private background
 installation is documented in [docs/09-30 background-local.md](docs/09-30%20background-local.md).
@@ -61,9 +66,9 @@ Requirements:
 Clone the reviewed source:
 
 ```bash
-git clone https://github.com/syncweave-labs/reminders-task-bridge.git \
-  ~/apps/icloud-reminders-google-sync
-cd ~/apps/icloud-reminders-google-sync
+git clone https://github.com/siyuanj/local-tasks-bridge.git \
+  ~/apps/local-tasks-bridge
+cd ~/apps/local-tasks-bridge
 ```
 
 Run the source-only checks before installation:
@@ -236,14 +241,14 @@ bash scripts/test-release-source-gate.sh
 
 - 현재 브랜치가 `main`
 - tracked/untracked 변경이 없는 깨끗한 worktree
-- `origin`이 `syncweave-labs/reminders-task-bridge`
+- `origin`이 `siyuanj/local-tasks-bridge`
 - `HEAD == origin/main == GitHub의 live main`
 - `HEAD == DEPLOY_EXPECTED_COMMIT`
 
 검토·병합된 main을 설치하는 명령:
 
 ```bash
-cd ~/apps/icloud-reminders-google-sync
+cd ~/apps/local-tasks-bridge
 git switch main
 git pull --ff-only
 DEPLOY_EXPECTED_COMMIT="$(git rev-parse HEAD)" bash setup-new-mac.sh
@@ -269,7 +274,7 @@ GitHub origin은 우회할 수 없다. 정상 설치에서는 이 override를 �
 기존 Mac의 clean main에서 번들을 만든다.
 
 ```bash
-cd ~/apps/icloud-reminders-google-sync
+cd ~/apps/local-tasks-bridge
 git switch main
 git pull --ff-only
 DEPLOY_EXPECTED_COMMIT="$(git rev-parse HEAD)" bash make-migration-bundle.sh

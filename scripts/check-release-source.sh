@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-EXPECTED_REPOSITORY="syncweave-labs/reminders-task-bridge"
+EXPECTED_REPOSITORY="siyuanj/local-tasks-bridge"
 EXPECTED_BRANCH="main"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 SOURCE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd -P)"

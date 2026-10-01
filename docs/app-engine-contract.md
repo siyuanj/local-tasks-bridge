@@ -148,6 +148,7 @@ or `null`.
   "token_ready": true,
   "include_lists": ["My Tasks"],
   "sync_interval_seconds": 60,
+  "loop_running": true,
   "agent": {"installed": true, "loaded": true, "label": "io.github.siyuanj.local-tasks-bridge"},
   "log_path": "/Users/me/Library/Logs/LocalTasksBridge/engine.log",
   "legacy_install_detected": false
@@ -157,9 +158,11 @@ or `null`.
 `condition` is one of: `setup_required`, `auth_required`,
 `account_binding_required`, `mutation_approval_pending`, `mutation_blocked`,
 `paused`, `running`, `failed`, `never_synced`, `status_unreadable`,
-`agent_stopped`, `healthy`, `unknown`. `headline` and `action` are localized
-(`LTB_LANG`). `setup_completed` is true when `config.json` contains
-`setup_completed_at`.
+`agent_stopped`, `attention` (checks passed but no full sync since),
+`healthy`, `unknown`. `headline` and `action` are localized (`LTB_LANG`).
+`setup_completed` is true when `config.json` contains `setup_completed_at`
+(or a sync has succeeded before). `loop_running` is true while any `run-loop`
+holds `run-loop.lock`; `agent.loaded` is `null` when `launchctl` is unavailable.
 
 ### `lists [--google] --json`
 
@@ -224,8 +227,11 @@ default browser unless `--no-browser` (then the URL is printed to stderr). Waits
 up to 5 minutes. The app can cancel by sending SIGTERM.
 
 ```json
-{"ok": true, "account_email": "me@gmail.com", "client_mode": "custom"}
+{"ok": true, "account_email": "me@gmail.com", "client_mode": "custom", "account_fingerprint": "1a2b3c4d5e6f"}
 ```
+
+Sign-in is rejected (exit 3) when the person unticks the Google Tasks
+permission on Google's consent screen.
 
 ### `account --json` (network)
 
@@ -284,8 +290,13 @@ shown by the engine via `osascript` (it has to wait for an answer), and the
 app additionally offers **Review Pending Changes…** through `approvals`.
 
 The loop starts a cycle within about one second when `sync-now` is touched
-(no more often than `trigger_min_interval_seconds` after the previous start),
-and skips cycles while `paused` exists.
+(no more often than `trigger_min_interval_seconds`, default 10, after the
+previous start), and skips cycles while `paused` exists.
+
+Only one `run-loop` runs per config directory: a second one exits with status 1
+while another holds `run-loop.lock`. To stop the loop, send SIGTERM and allow up
+to 30 seconds: an idle loop exits at once, a loop in the middle of a cycle
+finishes that cycle first so state is never left half-written.
 
 ### `pause --json`, `resume --json`, `sync-now --json`
 
@@ -353,15 +364,17 @@ StandardOutPath/StandardErrorPath  ~/Library/Logs/LocalTasksBridge/app.log
 ```
 
 `install` writes the plist and bootstraps it only when the job is not already
-loaded (so an app started by launchd never kills itself); `uninstall` boots it
-out and deletes the plist. `status` returns `{"installed", "loaded", "label",
-"program"}`.
+loaded (so an app started by launchd never kills itself). `uninstall` deletes
+the plist, and boots the running job out only when `--bootout` is given or when
+it is not called by the app (`LTB_APP_BUNDLE` unset). `status` returns
+`{"installed", "loaded", "label", "plist", "program"}`.
 
 ### `uninstall [--revoke] [--delete-data] --yes --json`
 
-Removes the LaunchAgent; with `--revoke`, revokes the Google token; with
-`--delete-data`, deletes the config dir and logs. The app then moves itself to
-the Trash and quits.
+Removes the LaunchAgent (booting it out only when not called by the app);
+with `--revoke`, revokes the Google token; with `--delete-data`, deletes the
+config dir and logs. The app then moves itself to the Trash and quits with
+exit status 0, so `KeepAlive` does not restart it.
 
 ### Terminal-only commands
 

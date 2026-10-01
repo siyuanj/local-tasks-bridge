@@ -1,5 +1,23 @@
 # Local trial status
 
+## 2026-10-01 08:10 CST (Asia/Shanghai) - Branding 完成，Production 待确认
+
+- 用户明确同意发布 OAuth 说明页。网站 commit `975fe65` 已 push 到
+  `siyuanj.github.io`；GitHub Pages 状态为 built、无构建错误，应用首页和隐私
+  政策两个 URL 均通过实际 HTTP 内容核验。
+- Google Branding 已填写这两个公开 URL 和授权域名 `siyuanj.github.io`，控制台
+  显示 `Branding changes saved!`。Audience 的 `Publish app` 已由 disabled 变为
+  可点击，状态仍为 Testing；尚未切换 Production。
+- 下一步影响：Production 会把授权从测试用户/七天期限改为生产模式，并允许
+  其他 Google 账号在取得本应用客户端/授权入口时自行授权自己的数据。它不会
+  公开当前账号的待办；权限保持 Tasks + openid/email。之后还必须备份旧 token、
+  重新授权并核验刷新和后台轮次。
+- 阻塞：电脑操作政策要求对授权有效期的实质扩展在操作时取得具体确认。已到
+  `Publish app` 的最终动作前，等待用户确认。
+- 尚未验证：In production、新 refresh token、刷新请求及后台授权轮次。现有
+  10 条批量完成仍为独立待确认事项。
+- 要用户定的：是否现在执行 Production 切换并重新授予同样的 Tasks + 身份权限。
+
 ## 2026-10-01 08:06 CST (Asia/Shanghai) - 长期 OAuth 公开说明页待发布
 
 - 用户要求：继续配置长期 Google 授权。Mac 已解锁，Google Auth Platform

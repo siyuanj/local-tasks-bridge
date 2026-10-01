@@ -630,6 +630,30 @@ class QuotaFriendlySchedulingTests(unittest.TestCase):
             config["sync_interval_seconds"] = 900
             self.assertEqual(sync.effective_scheduler_timing(config)[0], 900)
 
+    def test_running_loop_follows_a_switch_to_the_shared_client(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_name:
+            base = Path(tmp_name)
+            config = isolated_config(base, sync_interval_seconds=60, trigger_min_interval_seconds=10)
+            token = base / "token.json"
+            token.write_text(json.dumps({"_oauth_client_mode": "custom"}), encoding="utf-8")
+            intervals: list[int] = []
+
+            def fake_wait(interval: int, _approvals: object, **_kwargs: object) -> None:
+                intervals.append(interval)
+                token.write_text(json.dumps({"_oauth_client_mode": "bundled"}), encoding="utf-8")
+                if len(intervals) == 2:
+                    raise KeyboardInterrupt
+
+            with mock.patch.object(sync, "load_config", return_value=config), \
+                    mock.patch.object(sync, "run_sync", return_value={}), \
+                    mock.patch.object(sync, "harden_runtime_log_modes"), \
+                    mock.patch.object(sync, "notify_sync_ok"), \
+                    mock.patch.object(sync, "wait_for_next_cycle", side_effect=fake_wait), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                sync.cmd_run_loop(mock.Mock())
+            self.assertEqual(intervals, [60, 300])
+            self.assertEqual(config["trigger_min_interval_seconds"], 30)
+
 
 def argparse_namespace(**values: object):
     import argparse

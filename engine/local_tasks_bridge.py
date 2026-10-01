@@ -7244,7 +7244,8 @@ def run_scheduler(args: argparse.Namespace, loop_log: LoopLog | None) -> None:
     apply_network_config(config)
     if int(config["sync_interval_seconds"]) < MIN_SYNC_INTERVAL_SECONDS:
         raise SystemExit("sync_interval_seconds must be at least 60.")
-    interval, config["trigger_min_interval_seconds"] = effective_scheduler_timing(config)
+    configured_trigger_gap = int(config.get("trigger_min_interval_seconds") or 0)
+    interval, _trigger_gap = effective_scheduler_timing(config)
 
     lock_handle = acquire_loop_lock(config)
     if lock_handle is None:
@@ -7268,6 +7269,11 @@ def run_scheduler(args: argparse.Namespace, loop_log: LoopLog | None) -> None:
         while True:
             cycle_started_at = time.monotonic()
             cycle_started_wall = time.time()
+            # Re-evaluated every cycle: signing in again can switch between
+            # the person's own client and the shared one.
+            interval, config["trigger_min_interval_seconds"] = effective_scheduler_timing(
+                {**config, "trigger_min_interval_seconds": configured_trigger_gap}
+            )
             if sync_paused(config):
                 if not was_paused:
                     print(f"[{utc_now_text()}] sync paused", flush=True)

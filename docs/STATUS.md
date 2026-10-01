@@ -1,5 +1,24 @@
 # Local trial status
 
+## 2026-10-01 08:06 CST (Asia/Shanghai) - 长期 OAuth 公开说明页待发布
+
+- 用户要求：继续配置长期 Google 授权。Mac 已解锁，Google Auth Platform
+  再次确认 Audience 为 External / Testing，Publish app 禁用并明确要求先完成
+  Branding；Branding 中应用首页、隐私政策和授权域名为空。
+- 已准备：在独立的网站工作副本 `../website-branding` 中新增应用首页和隐私
+  政策，说明本地同步用途、Tasks + 身份权限、数据用途、本地存储、保留、撤销
+  及 Google Limited Use。页面不含待办、邮箱、token、client secret 或私有日志；
+  已提交为网站本地 commit `975fe65`，尚未 push，公开站点未改变。
+- 验证：网站 `git diff --check` 通过；本机缺少仓库 Jekyll gems，
+  `bundle exec jekyll build` 未运行成功且没有安装依赖。需要发布后核验 GitHub
+  Pages 构建和两个 URL。
+- 当前阻塞/下一步：公开学术网站属于对外发布，已将两个本地草稿作为具体可
+  复核结果交给用户，等待是否发布的明确答复。批准后 push、核验 Pages、填写
+  Branding，再到 Production / 新 OAuth 授权的操作时按接口规则取得具体确认。
+- 尚未验证：Google Production、新 refresh token、长期刷新和后台授权轮次均未
+  完成；现有同步范围、单次破坏性限额及 10 条待确认完成计划未改变。
+- 要用户定的：是否将两页说明发布到 `siyuanj.github.io`。
+
 ## 2026-09-30 23:32 CST (Asia/Shanghai) - 长期 OAuth 配置准备及锁屏阻塞
 
 - 用户要求：配置长期 Google 授权；沿用本人项目与现有 Tasks + 身份权限，不改变同步范围或破坏性限额。

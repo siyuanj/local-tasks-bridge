@@ -5054,6 +5054,8 @@ def plan_google_task_outbound_mutations(
             list_title = str(record.get("tasklist_title") or "")
             uid = key.split(":", 1)[1] if ":" in key else ""
             task_id = str(record.get("task_id") or "")
+            if not record_list_in_scope(desired_by_list, tasklists, list_title, tasklist_id):
+                continue
             if not list_allows_apple_to_google(config, list_title):
                 continue
             if not list_allows_delete_propagation(
@@ -5168,6 +5170,22 @@ def plan_google_task_outbound_mutations(
                     )
 
     return actions
+
+
+def record_list_in_scope(
+    desired_by_list: dict[str, Any],
+    tasklists: dict[str, str],
+    list_title: str,
+    tasklist_id: str,
+) -> bool:
+    """Whether a tracked task still belongs to a list this sync manages.
+
+    A list that is no longer selected, was renamed or removed on either side,
+    or now maps to a different Google list is out of scope: its tasks are left
+    alone instead of being read as deletions.
+    """
+
+    return list_title in desired_by_list and bool(tasklist_id) and tasklists.get(list_title) == tasklist_id
 
 
 def managed_google_task_population(
@@ -5515,6 +5533,8 @@ def run_tasks_sync(config: dict[str, Any], dry_run: bool = False) -> dict[str, A
             list_title = str(record.get("tasklist_title") or "")
             uid = key.split(":", 1)[1] if ":" in key else ""
             task_id = str(record.get("task_id") or "")
+            if not record_list_in_scope(desired_by_list, tasklists, list_title, tasklist_id):
+                continue
             if not list_allows_apple_to_google(config, list_title):
                 continue
             if not list_allows_delete_propagation(

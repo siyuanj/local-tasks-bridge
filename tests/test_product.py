@@ -579,6 +579,73 @@ class SchedulerControlTests(unittest.TestCase):
             self.assertTrue(sync.sync_paused(config))
 
 
+class ListScopeSafetyTests(unittest.TestCase):
+    """Changing which lists sync must never read as deleting their tasks."""
+
+    def reminder(self, stable_id: str, list_title: str) -> dict[str, object]:
+        return {
+            "stable_id": stable_id, "title": f"Synthetic {stable_id}", "notes": "", "list_title": list_title,
+            "list_id": f"apple-{list_title}", "account_id": "synthetic-account", "due_date": "2026-10-01",
+            "due_at": None, "all_day": True, "is_completed": False,
+            "modified_at": "2026-10-01T00:00:00Z", "completed_at": None,
+        }
+
+    def run_sync(self, *, selected: dict[str, str], tracked: dict[str, str]) -> mock.Mock:
+        """selected: list title -> Google list ID now; tracked: list title -> Google list ID in state."""
+        with tempfile.TemporaryDirectory() as directory:
+            config = sync.default_config()
+            config.update(
+                state_path=str(Path(directory) / "state.json"),
+                bidirectional=True, delete_stale=True, tasks_complete_stale=True,
+                max_destructive_changes=100, max_destructive_ratio=1.0, verify_title_due_after_sync=False,
+            )
+            state: dict[str, object] = {"version": 1, "events": {}, "tasks": {}}
+            binding = {"version": 1, "apple": "a", "google": "g"}
+            sync.bind_or_validate_sync_state_accounts(state, binding)
+            desired: dict[str, dict[str, object]] = {}
+            snapshots: dict[str, list[dict[str, object]]] = {}
+            for list_title, tasklist_id in tracked.items():
+                for index in range(3):
+                    reminder = self.reminder(f"{list_title}-{index}", list_title)
+                    uid, body, digest = sync.build_task(reminder, config)
+                    task = {**body, "id": f"{tasklist_id}-task-{index}", "status": "needsAction"}
+                    sync.save_task_state(state, tasklist_id, uid, task, digest, reminder["title"], reminder, config, list_title)
+                    snapshots.setdefault(tasklist_id, []).append(task)
+                    if list_title in selected and selected[list_title] == tasklist_id:
+                        desired.setdefault(list_title, {})[uid] = (body, digest, reminder)
+            for list_title in selected:
+                desired.setdefault(list_title, {})
+            client = mock.Mock()
+            with contextlib.ExitStack() as stack:
+                def patch(name: str, **kwargs: object) -> mock.Mock:
+                    return stack.enter_context(mock.patch.object(sync, name, **kwargs))
+
+                patch("build_desired_tasks", return_value=([], desired, 0))
+                patch("build_completed_tasks", return_value=([], {}, 0))
+                patch("load_state", return_value=state)
+                patch("resolve_sync_account_binding", return_value=binding)
+                patch("GoogleTasksClient", return_value=client)
+                patch("inspect_tasklists_for_desired", return_value=(dict(selected), []))
+                patch("list_task_snapshot", side_effect=lambda _client, tasklist_id: (snapshots.get(tasklist_id, []), []))
+                patch("apply_google_task_changes_to_reminders", return_value=(0, 0, 0, set()))
+                stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+                sync.run_tasks_sync(config)
+            return client
+
+    def test_unselecting_a_list_leaves_its_google_tasks_alone(self) -> None:
+        client = self.run_sync(selected={"Work": "g-work"}, tracked={"Work": "g-work", "Errands": "g-errands"})
+        client.delete_task.assert_not_called()
+        client.complete_task.assert_not_called()
+
+    def test_a_google_list_now_mapped_elsewhere_is_left_alone(self) -> None:
+        client = self.run_sync(
+            selected={"Work": "g-new-work", "Home": "g-home"},
+            tracked={"Work": "g-old-work", "Home": "g-home"},
+        )
+        client.delete_task.assert_not_called()
+        client.complete_task.assert_not_called()
+
+
 class QuotaFriendlySchedulingTests(unittest.TestCase):
     def orchestrate(self, existing_matches: bool) -> mock.Mock:
         with tempfile.TemporaryDirectory() as directory:

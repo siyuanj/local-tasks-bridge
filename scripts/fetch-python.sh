@@ -207,6 +207,9 @@ print("Python %d.%d.%d, %s, SQLite %s" % (sys.version_info[:3] + (ssl.OPENSSL_VE
 
   [ -x "$python" ] || die "$python is missing after extraction."
   if ! can_run_arch "$arch"; then
+    if [ "${LTB_REQUIRE_SMOKE_TESTS:-0}" = "1" ]; then
+      die "This Mac cannot run $arch code, so the required import check cannot run (install Rosetta 2)."
+    fi
     log "Skipping the import check: this Mac cannot run $arch code."
     return 0
   fi

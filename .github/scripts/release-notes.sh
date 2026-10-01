@@ -15,10 +15,11 @@ version="$1"
 changelog="${2:-CHANGELOG.md}"
 [ -f "$changelog" ] || { printf 'Error: %s not found.\n' "$changelog" >&2; exit 1; }
 
-# Everything after the matching heading up to the next "## [" heading, without
-# link reference definitions and leading blank lines.
+# Everything after the matching heading up to the next "## " heading (for
+# example "## [0.9.0]" or "## Before the fork"), without link reference
+# definitions and leading blank lines.
 notes="$(awk -v heading="## [${version}]" '
-  index($0, "## [") == 1 {
+  index($0, "## ") == 1 {
     if (found) exit
     if (index($0, heading) == 1) { found = 1; next }
   }

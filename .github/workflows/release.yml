@@ -29,12 +29,34 @@ jobs:
       # Optional secrets. Each feature is enabled only when all of its secrets exist.
       HAVE_SIGNING_CERT: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 != '' && secrets.MACOS_CERTIFICATE_PASSWORD != '' && secrets.MACOS_SIGN_IDENTITY != '' }}
       HAVE_NOTARY_CREDENTIALS: ${{ secrets.APPLE_ID != '' && secrets.APPLE_TEAM_ID != '' && secrets.APPLE_APP_PASSWORD != '' }}
+      HAVE_SHARED_CLIENT: ${{ secrets.LTB_OAUTH_CLIENT_JSON != '' }}
+      # Repository variable: set LTB_REQUIRE_SHARED_CLIENT=true to refuse releases without the shared client.
+      REQUIRE_SHARED_CLIENT: ${{ vars.LTB_REQUIRE_SHARED_CLIENT == 'true' }}
+      # Never skip the arm64 or x86_64 smoke tests in a release.
+      LTB_REQUIRE_SMOKE_TESTS: "1"
     steps:
       - name: Validate the tag name
         run: |
           if ! printf '%s\n' "$RELEASE_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
             echo "::error::Release tags look like v1.2.3; got '$RELEASE_TAG'."
             exit 1
+          fi
+
+      - name: Check the shared Google OAuth client
+        run: |
+          if [ "$HAVE_SHARED_CLIENT" = "true" ]; then
+            echo "The shared OAuth client will be embedded."
+          elif [ "$REQUIRE_SHARED_CLIENT" = "true" ]; then
+            echo "::error::LTB_OAUTH_CLIENT_JSON is not set, but the repository variable LTB_REQUIRE_SHARED_CLIENT requires the shared client."
+            exit 1
+          else
+            echo "::warning::LTB_OAUTH_CLIENT_JSON is not set: this release has no shared Google sign-in; users need their own Google Cloud client."
+            {
+              echo "> [!WARNING]"
+              echo "> This release was built **without** the shared Google OAuth client (secret \`LTB_OAUTH_CLIENT_JSON\` is not set)."
+              echo "> Users must import their own Google Cloud \"Desktop app\" client. Set the repository variable"
+              echo "> \`LTB_REQUIRE_SHARED_CLIENT=true\` to make such releases fail instead."
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -69,6 +91,13 @@ jobs:
           sw_vers
           swiftc --version
           /usr/bin/python3 --version
+
+      - name: Install Rosetta 2 (runs the x86_64 smoke tests)
+        run: |
+          if [ ! -e /Library/Apple/usr/libexec/oah/libRosettaRuntime ]; then
+            sudo softwareupdate --install-rosetta --agree-to-license
+          fi
+          arch -x86_64 /usr/bin/true
 
       - name: Unit tests (macOS system Python)
         run: make test PYTHON=/usr/bin/python3
@@ -123,13 +152,15 @@ jobs:
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: /bin/bash scripts/package-release.sh --arch all
 
-      - name: Install the arm64 release zip with install.sh (temporary HOME)
+      - name: Install both release zips with install.sh (temporary HOME)
         run: |
-          scratch="$(mktemp -d)"
-          mkdir -p "$scratch/home"
-          HOME="$scratch/home" /bin/bash ./install.sh --zip dist/LocalTasksBridge-macos-arm64.zip \
-            --dest "$scratch/Applications" --no-open --no-cli
-          rm -rf "$scratch"
+          for arch in arm64 x86_64; do
+            scratch="$(mktemp -d)"
+            mkdir -p "$scratch/home" "$scratch/system-apps"
+            HOME="$scratch/home" LTB_SYSTEM_APPLICATIONS_DIR="$scratch/system-apps" /bin/bash ./install.sh \
+              --zip "dist/LocalTasksBridge-macos-$arch.zip" --dest "$scratch/Applications" --no-open --no-cli
+            rm -rf "$scratch"
+          done
 
       - name: Summarize the build
         run: |

@@ -11,8 +11,8 @@ SWIFTC ?= swiftc
 MACOS_MIN ?= 13.0
 # bash used for `bash -n`; /bin/bash is 3.2 on macOS, the version users run.
 LINT_BASH ?= /bin/bash
-# Set to 1 (as CI does) to fail `make lint` when shellcheck is not installed.
-REQUIRE_SHELLCHECK ?= 0
+# Set to 1 (as CI does) to fail `make lint` when shellcheck or actionlint is missing.
+LINT_REQUIRE ?= 0
 # Extra arguments, for example: make install INSTALL_ARGS="--embed-python --no-open"
 INSTALL_ARGS ?=
 UNINSTALL_ARGS ?=
@@ -51,15 +51,17 @@ lint: ## bash -n and shellcheck on every shell script, actionlint, Python syntax
 	printf 'bash -n (%s): %s scripts\n' "$(LINT_BASH)" "$${#scripts[@]}"; \
 	if command -v shellcheck >/dev/null 2>&1; then \
 	  shellcheck "$${scripts[@]}" && printf 'shellcheck: clean\n' || status=1; \
-	elif [ "$(REQUIRE_SHELLCHECK)" = "1" ]; then \
+	elif [ "$(LINT_REQUIRE)" = "1" ]; then \
 	  printf 'shellcheck is required but not installed.\n' >&2; status=1; \
 	else \
 	  printf 'shellcheck not found; skipped (brew install shellcheck).\n'; \
 	fi; \
 	if command -v actionlint >/dev/null 2>&1; then \
 	  actionlint && printf 'actionlint: clean\n' || status=1; \
+	elif [ "$(LINT_REQUIRE)" = "1" ]; then \
+	  printf 'actionlint is required but not installed.\n' >&2; status=1; \
 	else \
-	  printf 'actionlint not found; skipped.\n'; \
+	  printf 'actionlint not found; skipped (brew install actionlint).\n'; \
 	fi; \
 	python_files=(engine/*.py); \
 	while IFS= read -r file; do python_files+=("$$file"); done < <(find tests -name '*.py' 2>/dev/null | LC_ALL=C sort); \

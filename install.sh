@@ -40,6 +40,7 @@ DELETE_DATA=0
 # Runtime state.
 UI_LANG="en"
 REPOSITORY="$DEFAULT_REPOSITORY"
+SYSTEM_APPS_DIR="/Applications"
 HOST_ARCH=""
 WORK_DIR=""
 STAGING_DIR=""
@@ -118,7 +119,8 @@ usage() {
 
 选项：
   --version vX.Y.Z     安装指定版本，而不是最新版本。
-  --dest 目录          安装到该目录（默认 ~/Applications；也可以用 /Applications）。
+  --dest 目录          安装到该文件夹。不指定时，会就地更新已安装的副本（~/Applications
+                       或 /Applications）；首次安装默认放在 ~/Applications。
   --zip 路径           从已下载的发布 zip 安装；如果 zip 旁边有 SHA256SUMS，会先校验。
   --from-source [目录] 从源代码构建（默认：本安装脚本所在的源代码目录，否则重新克隆）。
                        需要 Xcode Command Line Tools。
@@ -136,6 +138,7 @@ usage() {
   LTB_RELEASE_BASE_URL 从这个地址下载发布文件（zip 与 SHA256SUMS），而不是 GitHub。
   LTB_REPOSITORY       用于下载和克隆的 GitHub 仓库（默认 siyuanj/local-tasks-bridge）。
   LTB_LANG             安装程序的语言：en 或 zh。
+  https_proxy          下载使用的代理（curl 不使用 macOS 系统代理），例如 http://127.0.0.1:7890。
 
 安装程序从不使用 sudo，也不能以 root 身份运行。
 USAGE
@@ -151,7 +154,9 @@ Usage:
 
 Options:
   --version vX.Y.Z     Install this release instead of the latest one.
-  --dest DIR           Install into DIR (default ~/Applications; /Applications works too).
+  --dest DIR           Install into the folder DIR. Without --dest an existing copy
+                       is updated where it is (~/Applications or /Applications);
+                       a first install goes to ~/Applications.
   --zip PATH           Install a downloaded release zip. A SHA256SUMS file next to
                        the zip is verified when present.
   --from-source [DIR]  Build from source (default: the checkout that contains this
@@ -173,6 +178,8 @@ Environment:
   LTB_REPOSITORY       GitHub repository to download and clone from
                        (default siyuanj/local-tasks-bridge).
   LTB_LANG             Language of the installer: en or zh.
+  https_proxy          Proxy for downloads (curl does not use the macOS system proxy),
+                       for example http://127.0.0.1:7890.
 
 The installer never uses sudo and does not run as root.
 USAGE
@@ -222,6 +229,13 @@ parse_args() {
     esac
     shift
   done
+
+  case "${DEST_DIR%/}" in
+    *.app)
+      usage_error "--dest is the folder that contains the app (for example ~/Applications), not the app itself." \
+        "--dest 应该是存放 App 的文件夹（例如 ~/Applications），而不是 App 本身。"
+      ;;
+  esac
 
   if [ -n "$REQUESTED_VERSION" ]; then
     [[ $REQUESTED_VERSION =~ $version_re ]] ||
@@ -291,6 +305,9 @@ preflight() {
   [ -x /usr/libexec/PlistBuddy ] || die "Required tool not found: /usr/libexec/PlistBuddy" "缺少必需的工具：/usr/libexec/PlistBuddy"
 
   REPOSITORY="${LTB_REPOSITORY:-$DEFAULT_REPOSITORY}"
+  # Tests point this at a temporary folder so they never touch /Applications.
+  SYSTEM_APPS_DIR="${LTB_SYSTEM_APPLICATIONS_DIR:-/Applications}"
+  SYSTEM_APPS_DIR="${SYSTEM_APPS_DIR%/}"
   [[ $REPOSITORY =~ $repo_re ]] ||
     die "LTB_REPOSITORY must look like owner/name, got: $REPOSITORY" "LTB_REPOSITORY 的格式应为 owner/name，实际为：$REPOSITORY"
 }
@@ -464,6 +481,20 @@ verify_checksum() {
   say "Verified SHA-256 of $name." "已校验 $name 的 SHA-256。"
 }
 
+# Downloads go through curl, which ignores the macOS system proxy.
+proxy_hint() {
+  local current="${https_proxy:-${HTTPS_PROXY:-${all_proxy:-${ALL_PROXY:-}}}}"
+  if [ -n "$current" ]; then
+    say "Downloads use the proxy $current; check that it is running." "下载使用代理 $current；请确认代理软件正在运行。" >&2
+    return 0
+  fi
+  say "Tip: curl does not use the macOS system proxy. If you need a proxy to reach GitHub (common in mainland China), set it first, for example:" \
+    "提示：curl 不会使用 macOS 的系统代理。如果访问 GitHub 需要代理（在中国大陆很常见），请先设置代理，例如：" >&2
+  printf '    export https_proxy=http://127.0.0.1:7890\n' >&2
+  say "(use the HTTP proxy port shown in your proxy app), then run the installer again." \
+    "（端口以你的代理软件显示的 HTTP 代理端口为准），然后重新运行安装程序。" >&2
+}
+
 release_base_url() {
   if [ -n "${LTB_RELEASE_BASE_URL:-}" ]; then
     printf '%s\n' "${LTB_RELEASE_BASE_URL%/}"
@@ -482,10 +513,12 @@ fetch_release() {
 
   step "Downloading $asset…" "正在下载 $asset…"
   if ! download "$base/SHA256SUMS" "$WORK_DIR/SHA256SUMS"; then
+    proxy_hint
     die "Could not download SHA256SUMS from $base. Check your network connection and that the release exists." \
       "无法从 $base 下载 SHA256SUMS。请检查网络连接，并确认该版本存在。"
   fi
   if ! download "$base/$asset" "$WORK_DIR/$asset" 1; then
+    proxy_hint
     die "Could not download $asset from $base." "无法从 $base 下载 $asset。"
   fi
   verify_checksum "$WORK_DIR/$asset" "$WORK_DIR/SHA256SUMS" "$asset"
@@ -558,6 +591,7 @@ build_from_source() {
     fi
     step "Downloading the source code of $REPOSITORY…" "正在下载 $REPOSITORY 的源代码…"
     if ! git "${clone_args[@]}" "https://github.com/$REPOSITORY.git" "$WORK_DIR/source"; then
+      proxy_hint
       die "Could not clone https://github.com/$REPOSITORY.git." "无法克隆 https://github.com/$REPOSITORY.git。"
     fi
     src="$WORK_DIR/source"
@@ -641,9 +675,24 @@ validate_bundle() {
   NEW_VERSION="$version"
 }
 
+# Without --dest, update an existing copy where it is; a first install goes
+# to ~/Applications, which needs no administrator rights.
+default_dest_dir() {
+  if [ ! -e "$HOME/Applications/$APP_BUNDLE_NAME" ] &&
+    [ "$(bundle_id_of "$SYSTEM_APPS_DIR/$APP_BUNDLE_NAME" || true)" = "$BUNDLE_ID" ]; then
+    printf '%s\n' "$SYSTEM_APPS_DIR"
+  else
+    printf '%s\n' "$HOME/Applications"
+  fi
+}
+
 prepare_dest_dir() {
   local dest
-  dest="$(expand_tilde "${DEST_DIR:-$HOME/Applications}")"
+  if [ -n "$DEST_DIR" ]; then
+    dest="$(expand_tilde "$DEST_DIR")"
+  else
+    dest="$(default_dest_dir)"
+  fi
   if ! mkdir -p "$dest" 2>/dev/null; then
     die "Could not create $dest. Choose a folder you can write to with --dest; this installer never uses sudo." \
       "无法创建 $dest。请用 --dest 选择一个你有写入权限的目录；安装程序从不使用 sudo。"
@@ -769,7 +818,7 @@ link_cli() {
 
 warn_about_other_copies() {
   local other
-  for other in "$HOME/Applications/$APP_BUNDLE_NAME" "/Applications/$APP_BUNDLE_NAME"; do
+  for other in "$HOME/Applications/$APP_BUNDLE_NAME" "$SYSTEM_APPS_DIR/$APP_BUNDLE_NAME"; do
     [ "$other" != "$TARGET_APP" ] || continue
     if [ -d "$other" ] && [ "$(bundle_id_of "$other" || true)" = "$BUNDLE_ID" ]; then
       warn "Another copy is installed at $other. Remove it so only one copy runs." \
@@ -886,14 +935,14 @@ confirm_uninstall() {
 }
 
 run_uninstall() {
-  local candidate app dest ltb status
+  local candidate app dest ltb status output=""
   local -a candidates=() apps=() ltb_args=(uninstall --yes)
 
   if [ -n "$DEST_DIR" ]; then
     dest="$(expand_tilde "$DEST_DIR")"
     candidates=("${dest%/}/$APP_BUNDLE_NAME")
   else
-    candidates=("$HOME/Applications/$APP_BUNDLE_NAME" "/Applications/$APP_BUNDLE_NAME")
+    candidates=("$HOME/Applications/$APP_BUNDLE_NAME" "$SYSTEM_APPS_DIR/$APP_BUNDLE_NAME")
   fi
   for candidate in "${candidates[@]}"; do
     if [ -d "$candidate" ] && [ "$(bundle_id_of "$candidate" || true)" = "$BUNDLE_ID" ]; then
@@ -928,13 +977,32 @@ run_uninstall() {
     if ! LTB_LANG="$UI_LANG" "$ltb" agent uninstall --bootout --json </dev/null >/dev/null; then
       warn "Could not stop the login item; continuing." "无法停止登录项；继续卸载。"
     fi
-    LTB_LANG="$UI_LANG" "$ltb" "${ltb_args[@]}" </dev/null || status=$?
+    output="$(LTB_LANG="$UI_LANG" "$ltb" "${ltb_args[@]}" --json </dev/null)" || status=$?
   else
     status=127
   fi
   if [ "$status" -ne 0 ]; then
+    if [ -n "$output" ]; then
+      printf '%s\n' "$output" >&2
+    fi
     die "'ltb uninstall' failed (exit $status); the app was left in place. To remove the login item by hand run: launchctl bootout gui/$(id -u)/$LAUNCH_AGENT_LABEL; rm -f ~/Library/LaunchAgents/$LAUNCH_AGENT_LABEL.plist — then run this uninstaller again." \
       "ltb uninstall 执行失败（退出码 $status）；App 保持不变。可手动移除登录项：launchctl bootout gui/$(id -u)/$LAUNCH_AGENT_LABEL; rm -f ~/Library/LaunchAgents/$LAUNCH_AGENT_LABEL.plist，然后重新运行卸载。"
+  fi
+
+  say "Removed the login item." "已移除登录项。"
+  if [ "$REVOKE" -eq 1 ]; then
+    case "$output" in
+      *'"revoke_failed": true'*|*'"revoke_failed":true'*)
+        warn "Google access could not be revoked (network problem?). Revoke it yourself at https://myaccount.google.com/permissions" \
+          "未能撤销 Google 授权（可能是网络问题）。请在 https://myaccount.google.com/permissions 手动撤销。"
+        ;;
+      *'"revoked": true'*|*'"revoked":true'*)
+        say "Google access was revoked." "已撤销 Google 授权。"
+        ;;
+      *)
+        say "There was no Google sign-in to revoke." "没有需要撤销的 Google 登录。"
+        ;;
+    esac
   fi
 
   for app in "${apps[@]}"; do

@@ -76,8 +76,8 @@ jobs:
         run: |
           scratch="$(mktemp -d)"
           ditto -c -k --keepParent "$APP" "$scratch/LocalTasksBridge-macos-arm64.zip"
-          mkdir -p "$scratch/home"
-          HOME="$scratch/home" /bin/bash ./install.sh --zip "$scratch/LocalTasksBridge-macos-arm64.zip" \
+          mkdir -p "$scratch/home" "$scratch/system-apps"
+          HOME="$scratch/home" LTB_SYSTEM_APPLICATIONS_DIR="$scratch/system-apps" /bin/bash ./install.sh --zip "$scratch/LocalTasksBridge-macos-arm64.zip" \
             --dest "$scratch/Applications" --no-open
           HOME="$scratch/home" "$scratch/home/.local/bin/ltb" version --json
       - name: End-to-end tests
@@ -96,7 +96,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Show shellcheck
-        run: shellcheck --version
-      - name: Lint (bash -n, shellcheck, Python syntax)
-        run: make lint REQUIRE_SHELLCHECK=1
+      - name: Install actionlint (pinned release and SHA-256)
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL --retry 3 --proto '=https' -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/$archive"
+          echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$archive" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP/bin" actionlint
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Show the linters
+        run: |
+          shellcheck --version
+          actionlint --version
+      - name: Lint (bash -n, shellcheck, actionlint, Python syntax)
+        run: make lint LINT_REQUIRE=1

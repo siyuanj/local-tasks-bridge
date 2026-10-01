@@ -30,6 +30,9 @@ FIXTURES="${TMP_ROOT}/fixtures"
 CALLS="${TMP_ROOT}/calls"
 mkdir -p "$SHIM_DIR" "$FIXTURES" "$CALLS" "${TMP_ROOT}/tmp" "${TMP_ROOT}/logs" "${TMP_ROOT}/homes"
 TEST_PATH="${SHIM_DIR}:/usr/bin:/bin:/usr/sbin:/sbin"
+# Stands in for /Applications: install.sh looks there for existing copies.
+SYSTEM_APPS="${TMP_ROOT}/system-apps"
+mkdir -p "$SYSTEM_APPS"
 
 BACKGROUND_PIDS=""
 cleanup() {
@@ -76,7 +79,7 @@ check() {
 
 real_home_snapshot() {
   local path
-  for path in "${REAL_HOME}/.local/bin/ltb" "${REAL_HOME}/Applications/${APP_NAME}"; do
+  for path in "${REAL_HOME}/.local/bin/ltb" "${REAL_HOME}/Applications/${APP_NAME}" "/Applications/${APP_NAME}"; do
     if [ -e "$path" ] || [ -L "$path" ]; then
       stat -f '%N %i %m' "$path" 2>/dev/null || printf '%s present\n' "$path"
     else
@@ -179,6 +182,11 @@ case "\${1:-}" in
     exit 1
     ;;
   uninstall)
+    if [ "\${LTB_STUB_REVOKE_FAILED:-0}" = 1 ]; then
+      echo '{"ok": true, "revoked": false, "revoke_failed": true}'
+    else
+      echo '{"ok": true, "revoked": true, "revoke_failed": false}'
+    fi
     exit "\${LTB_STUB_UNINSTALL_EXIT:-0}"
     ;;
 esac
@@ -236,7 +244,8 @@ run_installer() {
   LOG="${TMP_ROOT}/logs/case-${CASE_NO}.log"
   STATUS=0
   env -i HOME="$TEST_HOME" PATH="$TEST_PATH" TMPDIR="${TMP_ROOT}/tmp" SHELL=/bin/zsh \
-    USER="${USER:-tester}" LTB_LANG="$TEST_LANG" ${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"} \
+    USER="${USER:-tester}" LTB_LANG="$TEST_LANG" LTB_SYSTEM_APPLICATIONS_DIR="$SYSTEM_APPS" \
+    ${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"} \
     "$TEST_BASH" "$INSTALLER" "$@" >"$LOG" 2>&1 </dev/null || STATUS=$?
 }
 
@@ -300,6 +309,8 @@ run_installer --version 1.0
 check "malformed --version is refused" exited_with 2
 run_installer --uninstall --zip x.zip
 check "--uninstall together with --zip is refused" exited_with 2
+run_installer --zip x.zip --dest "${TMP_ROOT}/Apps/Local Tasks Bridge.app"
+check "--dest pointing at an .app bundle is refused" exited_with 2
 
 # ---------------------------------------------------------------------------
 # Fresh install from a quarantined zip
@@ -467,6 +478,19 @@ run_installer --zip "${REL2}/LocalTasksBridge-macos-arm64.zip"
 check "install without --no-open succeeds" succeeded
 check "app is opened after installing" file_has "${CALLS}/open.log" "open ${APP}"
 
+EXTRA_ENV=(LTB_RELEASE_BASE_URL="file://${TMP_ROOT}/no-such-release")
+run_installer --no-open
+check "a failed download is refused" failed
+check "a failed download suggests setting https_proxy" output_has "export https_proxy=http://127.0.0.1:7890"
+EXTRA_ENV=()
+
+new_home system-copy
+make_app "$SYSTEM_APPS" 1.0.0
+run_installer --zip "${REL2}/LocalTasksBridge-macos-arm64.zip" --no-open --no-cli
+check "an existing copy in /Applications is updated in place" version_is "${SYSTEM_APPS}/${APP_NAME}" 1.0.1
+check "no second copy is created in ~/Applications" missing "${TEST_HOME}/Applications/${APP_NAME}"
+rm -rf "${SYSTEM_APPS:?}/${APP_NAME}"
+
 new_home nocli
 run_installer --zip "${REL1}/LocalTasksBridge-macos-arm64.zip" --no-open --no-cli
 check "--no-cli install succeeds" succeeded
@@ -511,7 +535,7 @@ new_home piped
 STATUS=0
 LOG="${TMP_ROOT}/logs/piped.log"
 env -i HOME="$TEST_HOME" PATH="$TEST_PATH" TMPDIR="${TMP_ROOT}/tmp" SHELL=/bin/zsh LTB_LANG=en \
-  "$TEST_BASH" -s -- --zip "${REL1}/LocalTasksBridge-macos-arm64.zip" --no-open --no-cli \
+  LTB_SYSTEM_APPLICATIONS_DIR="$SYSTEM_APPS" "$TEST_BASH" -s -- --zip "${REL1}/LocalTasksBridge-macos-arm64.zip" --no-open --no-cli \
   <"$INSTALLER" >"$LOG" 2>&1 || STATUS=$?
 check "install works when the script is piped into bash" succeeded
 check "piped install put the app in place" id_is "${TEST_HOME}/Applications/${APP_NAME}" "$BUNDLE_ID"
@@ -605,6 +629,15 @@ check "uninstall removed the CLI link" missing "$LINK"
 run_installer --uninstall --yes
 check "uninstalling again is a no-op" succeeded
 check "second uninstall reports nothing to remove" output_has "is not installed"
+
+new_home revoke-failed
+run_installer --zip "${REL1}/LocalTasksBridge-macos-arm64.zip" --no-open --no-cli
+EXTRA_ENV=(LTB_STUB_REVOKE_FAILED=1)
+run_installer --uninstall --yes --revoke
+check "uninstall finishes when the revocation failed" succeeded
+check "a failed revocation is reported with the Google permissions page" output_has "https://myaccount.google.com/permissions"
+check "a failed revocation is not reported as success" output_lacks "Google access was revoked."
+EXTRA_ENV=()
 
 TEST_HOME="${TMP_ROOT}/homes/custom-dest"
 run_installer --uninstall --yes --dest "$CUSTOM"

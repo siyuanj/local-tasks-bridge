@@ -14,6 +14,8 @@
 #   LTB_SIGN_IDENTITY       codesign identity; "-" (the default) means ad-hoc signing
 #   LTB_NOTARIZE=1          notarize and staple; needs a Developer ID identity and
 #                           APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD
+#   LTB_REQUIRE_SMOKE_TESTS=1  fail instead of skipping checks for an architecture
+#                           this Mac cannot run (the release workflow sets it)
 #
 # The OAuth client and Apple credentials are never printed.
 
@@ -217,6 +219,9 @@ smoke_test_app() {
   local original="$1" arch="$2" python_version="$3" home="${WORK_DIR}/home" app output
 
   if ! can_run_arch "$arch"; then
+    if [ "${LTB_REQUIRE_SMOKE_TESTS:-0}" = "1" ]; then
+      die "This Mac cannot run ${arch} code, so the required ${arch} smoke test cannot run (install Rosetta 2)."
+    fi
     log "Skipping the ${arch} smoke test: this Mac cannot run ${arch} code."
     return 0
   fi

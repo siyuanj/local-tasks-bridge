@@ -243,7 +243,7 @@ class OAuthClientTests(unittest.TestCase):
     def test_sign_in_without_the_tasks_permission_is_rejected_and_not_saved(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_name:
             base = Path(tmp_name)
-            with self.assertRaises(SystemExit) as caught:
+            with self.assertRaises(sync.AuthenticationRequired) as caught:
                 self.fake_auth(base, {"access_token": "a", "refresh_token": "r", "scope": "openid email"})
             self.assertIn("Google Tasks", str(caught.exception))
             self.assertFalse((base / "token.json").exists())
@@ -644,6 +644,145 @@ class ListScopeSafetyTests(unittest.TestCase):
         )
         client.delete_task.assert_not_called()
         client.complete_task.assert_not_called()
+
+
+class ReviewFindingRegressionTests(unittest.TestCase):
+    def test_tasks_mode_exports_far_future_reminders(self) -> None:
+        config = sync.default_config()
+        captured: list[list[str]] = []
+        with mock.patch.object(sync, "run_reminders_helper", side_effect=lambda _c, _k, arguments, **_kw: captured.append(arguments) or []):
+            sync.run_reminders_eventkit_export(config)
+            config["target_service"] = "calendar"
+            sync.run_reminders_eventkit_export(config)
+        self.assertEqual(captured[0][:2], ["--lookahead-days", str(sync.TASKS_LOOKAHEAD_DAYS)])
+        self.assertEqual(captured[1][:2], ["--lookahead-days", "365"])
+
+    def test_inbound_google_edit_keeps_the_reminder_time_of_day(self) -> None:
+        reminder = {
+            "stable_id": "r", "id": "r", "title": "Timed", "notes": "", "all_day": False, "due_date": None,
+            "due_at": sync.format_rfc3339(dt.datetime(2026, 10, 20, 15, 30).astimezone()),
+        }
+        same_day = {"title": "Renamed in Google", "due": "2026-10-20T00:00:00.000Z", "status": "needsAction"}
+        operation = sync.google_task_to_reminder_operation(same_day, reminder, sync.default_config())
+        self.assertNotIn("all_day", operation)
+        self.assertNotIn("clear_due", operation)
+        moved = {**same_day, "due": "2026-10-23T00:00:00.000Z"}
+        operation = sync.google_task_to_reminder_operation(moved, reminder, sync.default_config())
+        self.assertFalse(operation["all_day"])
+        local = sync.parse_rfc3339(operation["due_at"]).astimezone()
+        self.assertEqual((local.date().isoformat(), local.hour, local.minute), ("2026-10-23", 15, 30))
+        all_day = {**reminder, "all_day": True, "due_date": "2026-10-20"}
+        operation = sync.google_task_to_reminder_operation(moved, all_day, sync.default_config())
+        self.assertEqual((operation["all_day"], operation["due_date"]), (True, "2026-10-23"))
+
+    def test_status_keeps_only_the_first_line_of_an_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_name:
+            config = isolated_config(Path(tmp_name))
+            sync.write_sync_status(
+                config,
+                {"last_error": "Google Tasks title/due consistency check failed:\n- [Work] CANARY-TITLE: mismatch"},
+            )
+            self.assertEqual(
+                sync.read_sync_status(config)["last_error"], "Google Tasks title/due consistency check failed:"
+            )
+        self.assertNotIn("CANARY", sync.message_sync_failed(SystemExit("Failed.\nCANARY detail")))
+
+    def test_transient_read_failures_are_retried_but_writes_are_not(self) -> None:
+        client = sync.GoogleTasksClient.__new__(sync.GoogleTasksClient)
+        client.config = sync.default_config()
+        client.token = {"access_token": "a", "expires_at": 4_102_444_800, "refresh_token": "r"}
+        ok = mock.MagicMock()
+        ok.__enter__.return_value.read.return_value = b'{"items": []}'
+        server_error = urllib.error.HTTPError("https://x", 503, "busy", {}, io.BytesIO(b"{}"))
+        with mock.patch.object(sync.urllib.request, "urlopen", side_effect=[http.client.RemoteDisconnected("gone"), server_error, ok]), \
+                mock.patch.object(sync.time, "sleep"):
+            self.assertEqual(client.request("GET", "/users/@me/lists"), {"items": []})
+        with mock.patch.object(sync.urllib.request, "urlopen", side_effect=http.client.RemoteDisconnected("gone")) as opener, \
+                mock.patch.object(sync.time, "sleep"):
+            with self.assertRaises(http.client.RemoteDisconnected):
+                client.request("POST", "/lists/x/tasks", body={"title": "t"})
+        self.assertEqual(opener.call_count, 1)
+
+    def test_revocation_with_an_empty_success_body(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value.status = 200
+        response.__enter__.return_value.read.return_value = b""
+        with mock.patch.object(sync.urllib.request, "urlopen", return_value=response):
+            self.assertTrue(sync.revoke_google_token({"refresh_token": "r"}))
+        gone = urllib.error.HTTPError("https://x", 400, "invalid_token", {}, io.BytesIO(b"{}"))
+        with mock.patch.object(sync.urllib.request, "urlopen", side_effect=gone):
+            self.assertTrue(sync.revoke_google_token({"refresh_token": "r"}))
+        with mock.patch.object(sync.urllib.request, "urlopen", side_effect=urllib.error.URLError("offline")):
+            self.assertFalse(sync.revoke_google_token({"refresh_token": "r"}))
+
+    def test_only_the_app_counts_as_the_app(self) -> None:
+        with mock.patch.dict(os.environ, {"LTB_APP_BUNDLE": "/Applications/Local Tasks Bridge.app", "LTB_CALLER": ""}):
+            self.assertFalse(sync.called_from_app())
+        with mock.patch.dict(os.environ, {"LTB_CALLER": "app"}):
+            self.assertTrue(sync.called_from_app())
+
+    def test_app_hosted_loop_stops_when_the_app_is_gone(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_name:
+            config = isolated_config(Path(tmp_name), sync_interval_seconds=60)
+            parents = iter([4242, 4242, 1])
+            with mock.patch.dict(os.environ, {"LTB_EVENT_STREAM": "stdout"}), \
+                    mock.patch.object(sync.os, "getppid", side_effect=lambda: next(parents, 1)), \
+                    mock.patch.object(sync, "load_config", return_value=config), \
+                    mock.patch.object(sync, "run_sync", return_value={}) as run, \
+                    mock.patch.object(sync, "emit_event"), \
+                    mock.patch.object(sync, "harden_runtime_log_modes"), \
+                    mock.patch.object(sync, "notify_sync_ok"), \
+                    mock.patch.object(sync, "wait_for_next_cycle", return_value=None), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                sync.cmd_run_loop(mock.Mock())
+            self.assertEqual(run.call_count, 1)
+
+    def test_signing_out_stops_using_a_gcloud_credential(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_name:
+            home = Path(tmp_name)
+            run_engine(home, "config", "init", "--json")
+            config_dir = home / ".config" / "local-tasks-bridge"
+            document = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
+            document["use_adc"] = True
+            (config_dir / "config.json").write_text(json.dumps(document), encoding="utf-8")
+            (config_dir / "token.json").write_text(json.dumps({"refresh_token": "r"}), encoding="utf-8")
+            result = run_engine(home, "signout", "--json")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertTrue(payload["token_removed"] and payload["adc_disabled"])
+            self.assertFalse(json.loads((config_dir / "config.json").read_text(encoding="utf-8"))["use_adc"])
+
+    def test_rebuild_needs_confirmation_and_archives_the_state_under_the_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_name:
+            base = Path(tmp_name)
+            config = isolated_config(base)
+            Path(config["_config_path"]).write_text("{}", encoding="utf-8")
+            Path(config["state_path"]).write_text('{"tasks": {"old": {"task_id": "t"}}}', encoding="utf-8")
+            args = argparse_namespace(json=True, dry_run=False, yes=False, config=config["_config_path"])
+            with mock.patch.object(sync, "load_cli_config", return_value=config), \
+                    contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    sync.cmd_rebuild(args)
+            self.assertFalse(json.loads(out.getvalue())["ok"])
+            observed: list[bool] = []
+
+            def safe_sync(cfg: dict[str, object], *, dry_run: bool, lock_held: bool = False) -> dict[str, object]:
+                observed.append(lock_held)
+                self.assertFalse(Path(cfg["state_path"]).exists())
+                self.assertTrue(sync.sync_paused(cfg))
+                return {"summary": {"inserted": 0}, "plan": {}}
+
+            args.yes = True
+            with mock.patch.object(sync, "load_cli_config", return_value=config), \
+                    mock.patch.object(sync, "run_management_safe_sync", side_effect=safe_sync), \
+                    contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
+                sync.cmd_rebuild(args)
+            payload = json.loads(out.getvalue())
+            self.assertTrue(payload["ok"] and payload["rebuilt"] and payload["state_archived"])
+            self.assertEqual(observed, [True])
+            self.assertFalse(sync.sync_paused(config))
+            archived = list((base / "backups").glob("*/state.active-before-rebuild.json"))
+            self.assertEqual(len(archived), 1)
 
 
 class QuotaFriendlySchedulingTests(unittest.TestCase):

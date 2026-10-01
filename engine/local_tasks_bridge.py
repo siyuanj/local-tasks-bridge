@@ -15,6 +15,7 @@ import contextlib
 import datetime as dt
 import fcntl
 import hashlib
+import http.client
 import http.server
 import io
 import json
@@ -24,10 +25,12 @@ import plistlib
 import secrets
 import shutil
 import signal
+import socket
 import sqlite3
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from typing import Any, Callable
@@ -1259,6 +1262,18 @@ class OAuthCallbackHandler(http.server.BaseHTTPRequestHandler):
         return
 
 
+# Failures after which the outcome of a request is unknown. Only reads are
+# retried blindly; a completion is retried after reading the task back.
+TRANSIENT_NETWORK_ERRORS = (
+    urllib.error.URLError,
+    http.client.HTTPException,
+    ConnectionError,
+    TimeoutError,
+    socket.timeout,
+)
+RETRYABLE_HTTP_STATUSES = {429, 500, 502, 503, 504}
+
+
 def is_transient_url_error(exc: urllib.error.URLError) -> bool:
     reason = getattr(exc, "reason", exc)
     text = str(reason).lower()
@@ -1367,7 +1382,7 @@ def run_auth_flow(config: dict[str, Any]) -> dict[str, Any]:
     if result.get("state") != state:
         raise SystemExit("OAuth state mismatch; refusing to save token.")
     if result.get("error"):
-        raise SystemExit(
+        raise AuthenticationRequired(
             tr(
                 f"Google sign-in was not completed ({result['error']}).",
                 f"Google 登录未完成（{result['error']}）。",
@@ -1393,7 +1408,7 @@ def run_auth_flow(config: dict[str, Any]) -> dict[str, Any]:
     granted = token_granted_scopes(token)
     if granted and required_google_scope(config) not in granted:
         # Google's consent screen lets people untick individual permissions.
-        raise SystemExit(
+        raise AuthenticationRequired(
             tr(
                 "Google did not grant access to Google Tasks. Sign in again and leave the "
                 "\"Create, edit, organize, and delete all your tasks\" permission checked.",
@@ -1677,8 +1692,11 @@ class GoogleTasksClient:
                 if exc.code == 401 and retry:
                     self.token = refresh_token_with_fallback(self.config, self.token)
                     return self.request(method, path, params=params, body=body, retry=False)
+                if exc.code in RETRYABLE_HTTP_STATUSES and attempt < network_attempts:
+                    time.sleep(min(2**attempt, 10))
+                    continue
                 raise GoogleApiError(exc.code, raw) from exc
-            except urllib.error.URLError:
+            except TRANSIENT_NETWORK_ERRORS:
                 if attempt >= network_attempts:
                     raise
                 time.sleep(min(2**attempt, 10))
@@ -1760,7 +1778,7 @@ class GoogleTasksClient:
         for attempt in range(1, attempts + 1):
             try:
                 return self.patch_task(tasklist_id, task_id, {"status": "completed"})
-            except urllib.error.URLError:
+            except TRANSIENT_NETWORK_ERRORS:
                 # Completion is idempotent, but the transport may have failed
                 # after Google accepted the PATCH. Read the task before another
                 # write so an unknown successful outcome is never repeated.
@@ -2032,8 +2050,20 @@ def run_reminders_helper(
     return payload
 
 
+TASKS_LOOKAHEAD_DAYS = 36500
+
+
+def export_lookahead_days(config: dict[str, Any]) -> int:
+    """Calendar mode mirrors a window of dated reminders; Google Tasks has no
+    window, and a reminder moved far ahead must not look deleted."""
+
+    if str(config.get("target_service") or "tasks") == "tasks":
+        return max(int(config["lookahead_days"]), TASKS_LOOKAHEAD_DAYS)
+    return int(config["lookahead_days"])
+
+
 def run_reminders_eventkit_export(config: dict[str, Any], completed_only: bool = False) -> list[dict[str, Any]]:
-    arguments = ["--lookahead-days", str(config["lookahead_days"])]
+    arguments = ["--lookahead-days", str(export_lookahead_days(config))]
     if reminders_export_needs_undated(config):
         arguments.append("--include-undated")
     if completed_only:
@@ -2113,7 +2143,7 @@ def list_reminders_sqlite_paths(config: dict[str, Any]) -> list[Path]:
 
 
 def run_reminders_sqlite_export(config: dict[str, Any], completed_only: bool = False) -> list[dict[str, Any]]:
-    latest_date = dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=int(config["lookahead_days"]))
+    latest_date = dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=export_lookahead_days(config))
     list_filter = set(config["include_lists"])
     include_undated = reminders_export_needs_undated(config)
     reminders: dict[str, dict[str, Any]] = {}
@@ -2844,6 +2874,25 @@ def task_change_digest(
     return sha256_text(canonical_json(task_change_material(task_or_body, reminder, config)))
 
 
+def google_updated_since_sync(task: dict[str, Any], record: dict[str, Any] | None) -> bool:
+    """True when Google recorded a modification after the bridge last saw this task."""
+
+    seen = parse_optional_rfc3339((record or {}).get("google_updated"))
+    current = parse_optional_rfc3339(task.get("updated"))
+    return bool(seen and current and current > seen)
+
+
+def reminder_timed_due(reminder: dict[str, Any]) -> dt.datetime | None:
+    """The reminder's due time in local time, or None for all-day/undated reminders."""
+
+    if reminder.get("all_day") or reminder.get("due_date") or not reminder.get("due_at"):
+        return None
+    try:
+        return parse_rfc3339(str(reminder["due_at"])).astimezone()
+    except ValueError:
+        return None
+
+
 def google_task_to_reminder_operation(
     task: dict[str, Any],
     reminder: dict[str, Any],
@@ -2856,7 +2905,15 @@ def google_task_to_reminder_operation(
         "title": material["title"],
         "notes": material["notes"],
     }
-    if material["due_date"]:
+    timed_due = reminder_timed_due(reminder)
+    if material["due_date"] and timed_due is not None:
+        # Google Tasks stores dates only. Keep the reminder's time of day:
+        # leave it alone when the date is unchanged, move it when it changed.
+        if timed_due.date().isoformat() != material["due_date"]:
+            moved = dt.datetime.combine(dt.date.fromisoformat(material["due_date"]), timed_due.time()).astimezone()
+            operation["all_day"] = False
+            operation["due_at"] = format_rfc3339(moved)
+    elif material["due_date"]:
         operation["all_day"] = True
         operation["due_date"] = material["due_date"]
     else:
@@ -3208,8 +3265,13 @@ def plan_google_task_changes_to_reminders(
             # Google Tasks can temporarily omit a generated due field. Also,
             # when both sides changed, a newer Google title or note must not
             # erase a date that was concurrently added in Apple Reminders.
+            # A due date that was changed, or removed after the bridge last
+            # wrote the task, is a real edit in Google and flows to Apple.
+            google_due_missing = bool(body.get("due")) and not existing.get("due")
+            stale_google_read = google_due_missing and not google_updated_since_sync(existing, record)
             if task_only_due_differs(existing, body, reminder, config) and (
-                task_has_current_source_digest(existing, digest) or preserve_concurrent_apple_due
+                (stale_google_read and task_has_current_source_digest(existing, digest))
+                or preserve_concurrent_apple_due
             ):
                 continue
 
@@ -3504,6 +3566,9 @@ def save_task_state(
         "task_id": task["id"],
         "digest": digest,
         "google_digest": task_change_digest(task, reminder, config),
+        # Google's own modification time as last written or seen by the bridge;
+        # a later value proves a change made in Google rather than a stale read.
+        "google_updated": str(task.get("updated") or ""),
         "source_stable_id": reminder.get("stable_id") or reminder.get("external_id") or reminder.get("id"),
         "source_modified_at": reminder.get("modified_at"),
         "apple_completed": bool(reminder.get("is_completed")),
@@ -4080,6 +4145,15 @@ def management_condition(snapshot: dict[str, Any]) -> tuple[str, str, str]:
             tr("Sync is paused.", "同步已暂停。"),
             tr("Choose \"Resume Sync\" when you are ready.", "需要时请选择“恢复同步”。"),
         )
+    if state == "failed":
+        return (
+            "failed",
+            tr("The last sync failed.", "最近一次同步失败。"),
+            tr(
+                "Check the Google connection, then look at the private log for the cause.",
+                "请检查 Google 连接，再在私有日志中查看原因。",
+            ),
+        )
     if snapshot["agent_loaded"] is False and snapshot.get("setup_completed", True):
         return (
             "agent_stopped",
@@ -4105,15 +4179,6 @@ def management_condition(snapshot: dict[str, Any]) -> tuple[str, str, str]:
             tr(
                 "Back up the private status file; it is rewritten after the next sync.",
                 "请备份私有状态文件；下一次同步后会重新生成。",
-            ),
-        )
-    if state == "failed":
-        return (
-            "failed",
-            tr("The last sync failed.", "最近一次同步失败。"),
-            tr(
-                "Check the Google connection, then look at the private log for the cause.",
-                "请检查 Google 连接，再在私有日志中查看原因。",
             ),
         )
     if state == "running":
@@ -4266,13 +4331,21 @@ def start_management_agent(snapshot: dict[str, Any]) -> None:
         touch_private_file(config_dir / "sync-now")
 
 
-def run_management_safe_sync(config: dict[str, Any], *, dry_run: bool) -> None:
+def run_management_safe_sync(
+    config: dict[str, Any],
+    *,
+    dry_run: bool,
+    lock_held: bool = False,
+) -> dict[str, Any]:
+    """One sync with deletion and completion propagation turned off."""
+
     safe_config = dict(config)
     safe_config["delete_stale"] = False
     safe_config["_disable_delete_propagation"] = True
     safe_config["_mutation_plan_approval"] = ""
     safe_config["auto_reauth_browser"] = False
-    with sync_lock(safe_config, wait=True) as acquired:
+    lock = contextlib.nullcontext(True) if lock_held else sync_lock(safe_config, wait=True)
+    with lock as acquired:
         if not acquired:
             raise ManagementActionError(
                 tr("Another sync is running. Try again in a moment.", "另一轮同步正在进行，请稍后再试。")
@@ -4282,17 +4355,21 @@ def run_management_safe_sync(config: dict[str, Any], *, dry_run: bool) -> None:
             {"state": "running", "last_start_at": utc_now_text(), "last_error": "", "mutation_plan": None},
         )
         try:
-            run_sync(safe_config, dry_run=dry_run)
+            summary = run_sync(safe_config, dry_run=dry_run)
         except AccountBindingRequired as exc:
             write_sync_status(
                 safe_config,
                 {"state": "account_binding_required", "last_end_at": utc_now_text(), "last_error": str(exc)},
             )
             raise
-        except Exception as exc:
+        except (Exception, SystemExit) as exc:
             write_sync_status(
                 safe_config,
-                {"state": "failed", "last_end_at": utc_now_text(), "last_error": str(exc)},
+                {
+                    "state": "failed",
+                    "last_end_at": utc_now_text(),
+                    "last_error": str(exc.code if isinstance(exc, SystemExit) else exc),
+                },
             )
             raise
         write_sync_status(
@@ -4306,6 +4383,7 @@ def run_management_safe_sync(config: dict[str, Any], *, dry_run: bool) -> None:
                 "consecutive_failures": 0,
             },
         )
+    return {"summary": summary or {}, "plan": safe_config.get("_last_mutation_plan") or {}}
 
 
 def reminders_account_titles(config: dict[str, Any]) -> list[str]:
@@ -4364,11 +4442,11 @@ def google_connection_line(result: dict[str, Any], *, reconnected: bool = False)
     if reconnected:
         return tr(
             f"Google reconnected: OK ({account}, {count} task lists found)",
-            f"Google 已重新连接：正常（{account}，找到 {count} 个任务清单）",
+            f"Google 已重新连接：正常（{account}，找到 {count} 个任务列表）",
         )
     return tr(
         f"Google connection: OK ({account}, {count} task lists found)",
-        f"Google 连接：正常（{account}，找到 {count} 个任务清单）",
+        f"Google 连接：正常（{account}，找到 {count} 个任务列表）",
     )
 
 
@@ -4835,7 +4913,10 @@ def inspect_tasklists_for_desired(
             continue
 
         if not config["tasks_create_missing_lists"]:
-            raise SystemExit(f"Google Tasks list does not exist: {list_title}")
+            raise SystemExit(
+                "A selected Reminders list has no Google Tasks list and creating lists is turned off.\n"
+                f"List: {list_title}"
+            )
         missing.append(list_title)
         resolved[list_title] = f"planned:{sha256_text(list_title, 24)}"
 
@@ -4978,9 +5059,11 @@ def plan_google_task_outbound_mutations(
     *,
     allow_deletes: bool,
     allow_completions: bool | None = None,
+    deleted_tasks_by_list: dict[str, list[dict[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
     if allow_completions is None:
         allow_completions = allow_deletes
+    deleted_ids_by_list = deleted_task_ids_by_list(deleted_tasks_by_list or {})
     actions: list[dict[str, Any]] = []
     desired_keys: set[tuple[str, str]] = set()
     claimed_task_ids: set[tuple[str, str]] = set()
@@ -5026,6 +5109,12 @@ def plan_google_task_outbound_mutations(
             ):
                 record = None
             task_id = existing.get("id") if existing else record.get("task_id") if record else None
+            if task_id and not existing and str(task_id) in deleted_ids_by_list.get(list_title, set()):
+                # The tracked Google task is a deletion tombstone, yet the
+                # reminder still syncs (its edit is newer than the deletion,
+                # or deletions are not propagated): recreate the task rather
+                # than writing to the tombstone, which stays deleted.
+                task_id = None
             existing_metadata = parse_tasks_sync_metadata(str(existing.get("notes") or "")) if existing else {}
             existing_digest = existing_metadata.get("source digest") if existing else record.get("digest") if record else None
             existing_matches_desired = bool(existing and task_matches_desired(existing, body, reminder, config))
@@ -5170,6 +5259,13 @@ def plan_google_task_outbound_mutations(
                     )
 
     return actions
+
+
+def deleted_task_ids_by_list(deleted_tasks_by_list: dict[str, list[dict[str, Any]]]) -> dict[str, set[str]]:
+    return {
+        list_title: {str(task.get("id")) for task in tasks if task.get("id")}
+        for list_title, tasks in deleted_tasks_by_list.items()
+    }
 
 
 def record_list_in_scope(
@@ -5372,6 +5468,7 @@ def run_tasks_sync(config: dict[str, Any], dry_run: bool = False) -> dict[str, A
             completed_by_list,
             allow_deletes=allow_deletes,
             allow_completions=allow_completions,
+            deleted_tasks_by_list=deleted_tasks_by_list,
         )
     )
     population = max(source_count, managed_google_task_population(tasklists, tasks_by_list, state))
@@ -5430,6 +5527,7 @@ def run_tasks_sync(config: dict[str, Any], dry_run: bool = False) -> dict[str, A
     desired_keys: set[tuple[str, str]] = set()
     claimed_task_ids: set[tuple[str, str]] = set()
     recently_synced_task_ids: dict[tuple[str, str], str] = {}
+    deleted_ids_by_list = deleted_task_ids_by_list(deleted_tasks_by_list)
 
     for list_title, desired in desired_by_list.items():
         if not list_allows_apple_to_google(config, list_title):
@@ -5472,6 +5570,12 @@ def run_tasks_sync(config: dict[str, Any], dry_run: bool = False) -> dict[str, A
             ):
                 record = None
             task_id = existing.get("id") if existing else record.get("task_id") if record else None
+            if task_id and not existing and str(task_id) in deleted_ids_by_list.get(list_title, set()):
+                # The tracked Google task is a deletion tombstone, yet the
+                # reminder still syncs (its edit is newer than the deletion,
+                # or deletions are not propagated): recreate the task rather
+                # than writing to the tombstone, which stays deleted.
+                task_id = None
             existing_metadata = parse_tasks_sync_metadata(str(existing.get("notes") or "")) if existing else {}
             existing_digest = existing_metadata.get("source digest") if existing else record.get("digest") if record else None
             title = str(body.get("title") or reminder.get("title") or uid)
@@ -5649,6 +5753,11 @@ def run_tasks_sync(config: dict[str, Any], dry_run: bool = False) -> dict[str, A
                 client.delete_task(tasklist_id, str(task_id))
                 duplicate_deleted += 1
 
+    if not dry_run:
+        # Record what was written before a conflict or a failed verification
+        # ends the cycle, so the next cycle does not redo or duplicate it.
+        write_json_atomic(state_path, state)
+
     if config.get("verify_title_due_after_sync") and not dry_run:
         if bidir_conflicts:
             raise SystemExit(
@@ -5678,9 +5787,6 @@ def run_tasks_sync(config: dict[str, Any], dry_run: bool = False) -> dict[str, A
             # Every item already matched the snapshot read this cycle, so a
             # second full read would only spend Tasks API quota.
             print("Google Tasks title/due consistency: no writes this cycle; re-read skipped.")
-
-    if not dry_run:
-        write_json_atomic(state_path, state)
 
     print(
         "Sync summary: "
@@ -5878,7 +5984,26 @@ def utc_now_text() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
 
+def status_error_text(error: Any, limit: int = 300) -> str:
+    """The first line of an error message, for status.json and notifications.
+
+    Messages put any item titles on later lines (for example the post-sync
+    verification lists each mismatch), so the first line is safe to keep
+    outside the private log.
+    """
+
+    if isinstance(error, SystemExit) and isinstance(error.code, str):
+        text = error.code
+    else:
+        text = str(error or "")
+    lines = [line for line in text.strip().splitlines() if line.strip()]
+    first = " ".join(lines[0].split()) if lines else ""
+    return first if len(first) <= limit else first[: limit - 1].rstrip() + "…"
+
+
 def write_sync_status(config: dict[str, Any], updates: dict[str, Any]) -> None:
+    if updates.get("last_error"):
+        updates = {**updates, "last_error": status_error_text(updates["last_error"])}
     status_path = expand_path(config["status_path"])
     status: dict[str, Any] = {}
     if status_path.exists():
@@ -6090,7 +6215,8 @@ def message_auth_required() -> str:
 
 
 def message_sync_failed(detail: Any) -> str:
-    return tr(f"Sync failed: {detail}", f"同步失败：{detail}")
+    summary = status_error_text(detail, limit=160)
+    return tr(f"Sync failed: {summary}", f"同步失败：{summary}")
 
 
 MUTATION_APPROVAL_STATUS_KEY = "mutation_approval"
@@ -6228,7 +6354,7 @@ def mutation_approval_dialog_text(review: dict[str, Any], repeat_seconds: int, s
         ),
         "",
     ]
-    no_list = tr("no list", "无清单")
+    no_list = tr("no list", "无列表")
     for key, group in mutation_review_by_operation(review):
         lines.append(f"{mutation_review_label(key)}: {len(group)}")
         by_list = mutation_review_by_list(group)
@@ -6815,7 +6941,8 @@ def maybe_run_auto_reauth(config: dict[str, Any], reason: str) -> bool:
         )
         eprint(f"Automatic browser reauth timed out: {exc}")
         return False
-    except SystemExit as exc:
+    except (SystemExit, AuthenticationRequired) as exc:
+        # Denied consent, an unticked Tasks permission, or a refused client.
         latest_status = read_sync_status(config)
         failure_count = auto_reauth_failure_count(latest_status) + 1
         write_sync_status(
@@ -7280,6 +7407,16 @@ def run_scheduler(args: argparse.Namespace, loop_log: LoopLog | None) -> None:
     if install_handler:
         previous_handler = signal.signal(signal.SIGTERM, handle_loop_termination)
     _LOOP_SIGNALS.update(in_cycle=False, stop=False)
+    # Hosted by the menu bar app: if the app dies (force quit, crash), this
+    # process is re-parented and should not keep syncing on its own.
+    host_pid = os.getppid() if event_stream_enabled() else 0
+
+    def host_gone() -> bool:
+        if host_pid and os.getppid() != host_pid:
+            _LOOP_SIGNALS["stop"] = True
+            return True
+        return False
+
     approvals = MutationPlanApprovals(config)
     try:
         print(f"Starting sync loop every {interval} seconds. Press Ctrl-C to stop.", flush=True)
@@ -7287,6 +7424,10 @@ def run_scheduler(args: argparse.Namespace, loop_log: LoopLog | None) -> None:
         consecutive_failures = restored_consecutive_failures(read_sync_status(config))
         was_paused = False
         while True:
+            if host_gone():
+                print("The hosting app is gone; stopping sync loop.", flush=True)
+                approvals.close()
+                return
             cycle_started_at = time.monotonic()
             cycle_started_wall = time.time()
             # Re-evaluated every cycle: signing in again can switch between
@@ -7332,7 +7473,7 @@ def run_scheduler(args: argparse.Namespace, loop_log: LoopLog | None) -> None:
                     interval,
                     approvals,
                     cycle_started_at=cycle_started_at,
-                    wake=lambda: loop_wake_requested(
+                    wake=lambda: host_gone() or loop_wake_requested(
                         config,
                         was_paused=paused_now,
                         cycle_started_wall=cycle_started_wall,
@@ -7604,11 +7745,11 @@ def cmd_lists(args: argparse.Namespace) -> None:
         return {"apple": apple, "google": google}
 
     def human(result: dict[str, Any]) -> None:
-        print(tr("Apple Reminders lists:", "Apple 提醒事项清单："))
+        print(tr("Apple Reminders lists:", "Apple 提醒事项列表："))
         for item in result["apple"]:
             print(f"  - {item['title']}  ({item['account_title']})")
         if result["google"] is not None:
-            print(tr("Google Tasks lists:", "Google Tasks 清单："))
+            print(tr("Google Tasks lists:", "Google Tasks 列表："))
             for item in result["google"]:
                 print(f"  - {item['title']}")
 
@@ -7899,17 +8040,26 @@ def cmd_account(args: argparse.Namespace) -> None:
 
 
 def revoke_google_token(token: dict[str, Any]) -> bool:
+    """Ask Google to revoke a token; True when it is no longer valid."""
+
     value = str(token.get("refresh_token") or token.get("access_token") or "")
     if not value:
         return False
+    request = urllib.request.Request(
+        OAUTH_REVOKE_URL,
+        data=urllib.parse.urlencode({"token": value}).encode("utf-8"),
+        method="POST",
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
     try:
-        post_form(OAUTH_REVOKE_URL, {"token": value}, attempts=1)
-    except OAuthTokenError as exc:
+        # Google answers 200 with an empty body on success.
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return 200 <= response.status < 300
+    except urllib.error.HTTPError as exc:
         # 400 means Google no longer knows the token: it is already revoked.
-        return exc.status == 400
-    except (OSError, ValueError):
+        return exc.code == 400
+    except TRANSIENT_NETWORK_ERRORS:
         return False
-    return True
 
 
 def cmd_signout(args: argparse.Namespace) -> None:
@@ -7925,8 +8075,17 @@ def cmd_signout(args: argparse.Namespace) -> None:
                     revoked = revoke_google_token(read_json(token_path))
             token_path.unlink()
             removed = True
+        adc_disabled = False
+        if config.get("use_adc"):
+            # A gcloud credential belongs to gcloud: leave the file, stop using it.
+            path = expand_path(args.config)
+            document = read_config_document(path)
+            if document:
+                document["use_adc"] = False
+                save_config_document(path, document, args)
+                adc_disabled = True
         write_sync_status(config, {"state": "auth_required", "last_error": "", "last_signed_out_at": utc_now_text()})
-        return {"revoked": revoked, "token_removed": removed}
+        return {"revoked": revoked, "token_removed": removed, "adc_disabled": adc_disabled}
 
     run_cli_command(args, handler, lambda result: print(tr("Signed out of Google.", "已退出 Google 登录。")))
 
@@ -7999,16 +8158,16 @@ def sync_once(config: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
             )
             notify_sync_problem(config, message_auth_required())
             raise
-        except Exception as exc:
+        except (Exception, SystemExit) as exc:
             write_sync_status(
                 config,
                 {
                     "state": "failed",
                     "last_end_at": utc_now_text(),
-                    "last_error": str(exc),
+                    "last_error": str(exc.code if isinstance(exc, SystemExit) else exc),
                 },
             )
-            notify_sync_problem(config, message_sync_failed(exc))
+            notify_sync_problem(config, message_sync_failed(exc.code if isinstance(exc, SystemExit) else exc))
             raise
         write_sync_status(
             config,
@@ -8165,6 +8324,56 @@ def cmd_sync_now(args: argparse.Namespace) -> None:
                 "Background sync is not running; open Local Tasks Bridge, or run `ltb sync`.",
                 "后台同步没有运行；请打开 Local Tasks Bridge，或运行 `ltb sync`。",
             ))
+
+    run_cli_command(args, handler, human)
+
+
+# rebuild -------------------------------------------------------------------
+
+
+def cmd_rebuild(args: argparse.Namespace) -> None:
+    """Rebuild the sync map for the current accounts without propagating deletions.
+
+    The recovery for `account_binding_required` once the person has confirmed
+    that the Apple and Google accounts shown are the pair they want to sync.
+    """
+
+    def handler() -> dict[str, Any]:
+        config = load_cli_config(args)
+        if getattr(args, "dry_run", False) is True:
+            with tempfile.TemporaryDirectory(prefix="ltb-rebuild-") as scratch:
+                os.chmod(scratch, 0o700)
+                preview = dict(config)
+                preview["state_path"] = str(Path(scratch) / "state.json")
+                preview["status_path"] = str(Path(scratch) / "status.json")
+                result = run_management_safe_sync(preview, dry_run=True)
+            return {"dry_run": True, **result}
+        if getattr(args, "yes", False) is not True:
+            raise CommandError(
+                "failed",
+                tr("Rebuilding the sync map needs confirmation (--yes).", "重建同步对应关系需要确认（--yes）。"),
+            )
+        snapshot = {"control_dir": str(control_dir(config))}
+        held = stop_management_agent(snapshot)
+        try:
+            with sync_lock(config, wait=True) as acquired:
+                if not acquired:
+                    raise CommandError("failed", tr("Another sync is running. Try again in a moment.", "另一轮同步正在进行，请稍后再试。"))
+                # Hold the lock from moving the old state until the new one
+                # exists, so no regular cycle ever runs on an empty map.
+                backup_dir = backup_management_files(config, "rebuild")
+                archived = archive_state_for_rebuild(config, backup_dir)
+                result = run_management_safe_sync(config, dry_run=False, lock_held=True)
+        finally:
+            if held:
+                start_management_agent(snapshot)
+        return {"dry_run": False, "rebuilt": True, "state_archived": archived, "backup": str(backup_dir), **result}
+
+    def human(result: dict[str, Any]) -> None:
+        if result["dry_run"]:
+            print(json.dumps(result.get("plan"), indent=2, ensure_ascii=False, sort_keys=True))
+        else:
+            print(tr("Rebuilt the sync map. Nothing was deleted.", "已重建同步对应关系，没有删除任何内容。"))
 
     run_cli_command(args, handler, human)
 
@@ -8591,7 +8800,9 @@ def uninstall_launch_agent(*, bootout: bool) -> dict[str, Any]:
 
 
 def called_from_app() -> bool:
-    return bool(str(os.environ.get("LTB_APP_BUNDLE") or "").strip())
+    """The menu bar app marks its own engine processes; `ltb` in Terminal does not."""
+
+    return os.environ.get("LTB_CALLER") == "app"
 
 
 def cmd_agent(args: argparse.Namespace) -> None:
@@ -8814,6 +9025,15 @@ def build_parser() -> argparse.ArgumentParser:
     migrate_parser.add_argument("--yes", action="store_true")
     add_json_option(migrate_parser)
     migrate_parser.set_defaults(func=cmd_migrate)
+
+    rebuild_parser = subparsers.add_parser(
+        "rebuild",
+        help="Rebuild the sync map for the current accounts (no deletions), e.g. after an account change.",
+    )
+    rebuild_parser.add_argument("--dry-run", action="store_true", help="Show what the rebuild would do.")
+    rebuild_parser.add_argument("--yes", action="store_true")
+    add_json_option(rebuild_parser)
+    rebuild_parser.set_defaults(func=cmd_rebuild)
 
     agent_parser = subparsers.add_parser("agent", help="Manage the start-at-login item.")
     agent_actions = agent_parser.add_subparsers(dest="agent_action", required=True, metavar="ACTION")

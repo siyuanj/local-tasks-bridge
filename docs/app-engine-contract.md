@@ -42,7 +42,7 @@ Per-user files:
 | `…/config.json` | settings | 0600 |
 | `…/credentials.json` | the user's own OAuth "Desktop app" client (optional) | 0600 |
 | `…/token.json` | Google OAuth token | 0600 |
-| `…/state.json` | sync map (task IDs, digests, account binding hashes) | 0600 |
+| `…/state.json` | sync map (task IDs, digests, titles for local matching, account binding hashes) | 0600 |
 | `…/status.json` | last result, counts, hashes; never titles | 0600 |
 | `…/paused` | present while sync is paused | 0600 |
 | `…/sync-now` | touched to request an immediate cycle | 0600 |
@@ -78,6 +78,7 @@ Always run the engine as `python3 -B <engine> --config <config> <command> …`.
 | `LTB_LANG` | `zh` when the app runs in Chinese (`Bundle.main.preferredLocalizations.first` starts with `zh`), else `en` |
 | `LTB_EVENT_STREAM` | `stdout` — only for the long-running `run-loop` child |
 | `LTB_APP_BUNDLE` | absolute path of the running `.app` |
+| `LTB_CALLER` | `app` — marks engine processes started by the app itself (`ltb` in Terminal never sets it) |
 | `PATH` | `/usr/bin:/bin:/usr/sbin:/sbin` |
 | `PYTHONDONTWRITEBYTECODE` | `1` |
 | `PYTHONUNBUFFERED` | `1` |
@@ -155,6 +156,13 @@ or `null`.
 }
 ```
 
+`status --json` exits 7 (`config_invalid`) when `config.json` cannot be read;
+the app then offers to repair the setup. Conditions are checked in this order,
+the first match wins: `setup_required`, `account_binding_required`,
+`auth_required`, `mutation_approval_pending`, `mutation_blocked`, `paused`,
+`failed`, `agent_stopped`, `never_synced`, `status_unreadable`, `running`,
+`healthy`, `attention`, `unknown`.
+
 `condition` is one of: `setup_required`, `auth_required`,
 `account_binding_required`, `mutation_approval_pending`, `mutation_blocked`,
 `paused`, `running`, `failed`, `never_synced`, `status_unreadable`,
@@ -208,11 +216,27 @@ or `http://host:port`), `oauth_client` (`auto`|`custom`|`bundled`),
 
 Unknown keys fail with `config_invalid`.
 
+### `rebuild [--dry-run] [--yes] --json`
+
+The recovery for `account_binding_required` after the person confirms that the
+Apple and Google accounts now in use are the pair they want to sync. `--dry-run`
+computes, with deletion and completion propagation turned off and against an
+empty sync map, what the rebuild would do (`summary`, `plan`) without writing.
+`--yes` holds the background loop, backs up the private files, moves the old
+`state.json` into the backup, and runs one safe sync that builds a new map —
+all while holding the sync lock, so no regular cycle ever runs on an empty map.
+Nothing is deleted on either side.
+
+```json
+{"ok": true, "dry_run": false, "rebuilt": true, "state_archived": true, "backup": "…", "summary": {…}, "plan": {…}}
+```
+
 ### `client import <path> --json` / `client status --json`
 
 `import` validates a Google OAuth client JSON of type **Desktop app**
-(`{"installed": {...}}`), rejects Web clients with a clear message, copies it
-to `credentials.json` (0600) and sets `oauth_client` to `custom`.
+(`{"installed": {...}}`), rejects Web clients and other files with a clear
+message (exit 8, `oauth_client_missing`), copies it to `credentials.json`
+(0600) and sets `oauth_client` to `custom`.
 
 ```json
 {"ok": true, "client_id_hint": "1234…apps.googleusercontent.com"}
@@ -258,13 +282,15 @@ shows the counts, then `sync --no-delete-stale --json`.
              "unchanged": 12, "completed": 0, "deleted": 0, "duplicate_deleted": 0,
              "google_applied": 3, "bidir_conflicts": 0, "skipped_invalid": 0},
  "plan": {"total_count": 5, "destructive_count": 0,
-          "counts": {"apple_reminders.create": 3, "google_tasks.insert": 2}}}
+          "counts": {"apple_reminders.create": 3, "google_tasks.create": 2}}}
 ```
 
-`plan.counts` keys are `<target>.<operation>`, for example
-`google_tasks.insert`, `google_tasks.update`, `google_tasks.complete`,
-`google_tasks.delete`, `google_tasks.create_list`, `apple_reminders.create`,
-`apple_reminders.update`, `apple_reminders.complete`, `apple_reminders.delete`.
+`plan.counts` keys are `<target>.<operation>`: `google_tasks.create_list`,
+`google_tasks.create`, `google_tasks.update`, `google_tasks.attach` (add the
+matching footer to an existing Google task), `google_tasks.attach_after_create`,
+`google_tasks.complete`, `google_tasks.delete`, `google_tasks.dedupe_delete`,
+`apple_reminders.create`, `apple_reminders.update`, `apple_reminders.complete`,
+`apple_reminders.delete`. Deletions and completions are the destructive ones.
 When the safety limits block the plan, exit code 5 and
 `{"ok": false, "error": {"code": "approval_required", …}, "plan": {…}}`.
 
@@ -368,12 +394,13 @@ StandardOutPath/StandardErrorPath  ~/Library/Logs/LocalTasksBridge/app.log
 `install` writes the plist and bootstraps it only when the job is not already
 loaded (so an app started by launchd never kills itself). `uninstall` deletes
 the plist, and boots the running job out only when `--bootout` is given or when
-it is not called by the app (`LTB_APP_BUNDLE` unset). `status` returns
+it is not called by the app (`LTB_CALLER` is not `app`). `status` returns
 `{"installed", "loaded", "label", "plist", "program"}`.
 
 ### `uninstall [--revoke] [--delete-data] --yes --json`
 
-Removes the LaunchAgent (booting it out only when not called by the app);
+Removes the LaunchAgent (booting it out only when not called by the app, i.e.
+when `LTB_CALLER` is not `app`);
 with `--revoke`, revokes the Google token; with `--delete-data`, deletes the
 config dir and logs. The app then moves itself to the Trash and quits with
 exit status 0, so `KeepAlive` does not restart it.

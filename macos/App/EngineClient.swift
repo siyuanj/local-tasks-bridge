@@ -97,14 +97,15 @@ struct EngineError: Error, LocalizedError {
     }
 }
 
-/// Tracks running engine commands so they can all be stopped when the app quits.
+/// Tracks running engine commands: read-only ones can be stopped when the app
+/// quits, write commands are waited for.
 final class ProcessRegistry: @unchecked Sendable {
     private let lock = NSLock()
-    private var processes: [ObjectIdentifier: ChildProcess] = [:]
+    private var processes: [ObjectIdentifier: (process: ChildProcess, writes: Bool)] = [:]
 
-    func add(_ process: ChildProcess) {
+    func add(_ process: ChildProcess, writes: Bool) {
         lock.lock()
-        processes[ObjectIdentifier(process)] = process
+        processes[ObjectIdentifier(process)] = (process, writes)
         lock.unlock()
     }
 
@@ -114,11 +115,17 @@ final class ProcessRegistry: @unchecked Sendable {
         lock.unlock()
     }
 
-    func terminateAll() {
+    var writeInProgress: Bool {
         lock.lock()
-        let running = Array(processes.values)
+        defer { lock.unlock() }
+        return processes.values.contains { $0.writes }
+    }
+
+    func terminateReadOnly() {
+        lock.lock()
+        let readOnly = processes.values.filter { !$0.writes }.map(\.process)
         lock.unlock()
-        running.forEach { $0.cancel() }
+        readOnly.forEach { $0.cancel() }
     }
 }
 
@@ -168,16 +175,55 @@ final class EngineClient: @unchecked Sendable {
         ["-B", runtime.engine.path, "--config", paths.configFile.path] + command
     }
 
+    /// Commands that change files, Reminders, Google, or the login item. They
+    /// always run to the end: no timeout, and cancelling the calling task (a
+    /// closed window, Quit) does not signal them. Only `auth` and read-only
+    /// commands can be stopped.
+    static func isWriteCommand(_ command: [String]) -> Bool {
+        guard let name = command.first else {
+            return false
+        }
+        let action = command.dropFirst().first ?? ""
+        let dryRun = command.contains("--dry-run")
+        switch name {
+        case "sync", "rebuild", "migrate":
+            return !dryRun
+        case "approvals":
+            return action == "apply" || action == "hold"
+        case "client":
+            return action == "import"
+        case "config":
+            return action == "init" || action == "merge"
+        case "agent":
+            return action == "install" || action == "uninstall"
+        case "uninstall", "signout", "pause", "resume", "sync-now":
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// True while a write command is running (Quit waits, windows stay open).
+    var writeInProgress: Bool { registry.writeInProgress }
+
+    /// Waits until every running write command has finished.
+    func waitForWrites() async {
+        while registry.writeInProgress {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+    }
+
     /// Runs a command and returns the JSON object it printed on success.
     func run(_ command: [String], input: Data? = nil, timeout: TimeInterval? = EngineClient.defaultTimeout) async throws -> Data {
         let started = Date()
+        let writes = Self.isWriteCommand(command)
         let child = ChildProcess(
             executable: runtime.python,
             arguments: arguments(for: command),
             environment: environment(eventStream: false),
             currentDirectory: FileManager.default.homeDirectoryForCurrentUser
         )
-        registry.add(child)
+        registry.add(child, writes: writes)
         defer { registry.remove(child) }
 
         let output: ProcessOutput
@@ -185,16 +231,18 @@ final class EngineClient: @unchecked Sendable {
             output = try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<ProcessOutput, Error>) in
                     do {
-                        try child.start(input: input, timeout: timeout) { continuation.resume(returning: $0) }
+                        try child.start(input: input, timeout: writes ? nil : timeout) { continuation.resume(returning: $0) }
                     } catch {
                         continuation.resume(throwing: error)
                     }
                 }
             } onCancel: {
-                child.cancel()
+                if !writes {
+                    child.cancel()
+                }
             }
         } catch {
-            log?.write("engine \(command.joined(separator: " ")): could not start \(runtime.python.path): \(error.localizedDescription)")
+            log?.write("engine \(command.first ?? ""): could not start \(runtime.python.path): \(error.localizedDescription)")
             throw EngineError(code: EngineErrorCode.launchFailed)
         }
 
@@ -213,7 +261,7 @@ final class EngineClient: @unchecked Sendable {
         do {
             return try JSONDecoder().decode(T.self, from: data)
         } catch {
-            log?.write("engine \(command.joined(separator: " ")): unexpected JSON: \(error)")
+            log?.write("engine \(command.first ?? ""): unexpected JSON: \(error)")
             throw EngineError(code: EngineErrorCode.invalidOutput, payload: data)
         }
     }
@@ -231,9 +279,9 @@ final class EngineClient: @unchecked Sendable {
         )
     }
 
-    /// Stops every running one-shot command (used when the app quits).
-    func terminateAll() {
-        registry.terminateAll()
+    /// Stops running read-only commands and `auth` (used when the app quits).
+    func terminateReadOnlyCommands() {
+        registry.terminateReadOnly()
     }
 
     static func interpret(_ output: ProcessOutput) -> Result<Data, EngineError> {
@@ -294,15 +342,8 @@ final class EngineClient: @unchecked Sendable {
                 log.write("engine \(name): cancelled after \(elapsed)")
                 return
             }
-            var entry = "engine \(name): \(error.code) (exit \(output.exitCode)) after \(elapsed)"
-            let stderrTail = String(decoding: output.stderr, as: UTF8.self)
-                .split(separator: "\n")
-                .suffix(20)
-                .map { "  stderr: \($0)" }
-            if !stderrTail.isEmpty {
-                entry += "\n" + stderrTail.joined(separator: "\n")
-            }
-            log.write(entry)
+            // Engine output can contain reminder titles, so it stays out of app.log.
+            log.write("engine \(name): \(error.code) (exit \(output.exitCode)) after \(elapsed)")
         }
     }
 }
@@ -322,8 +363,9 @@ extension EngineClient {
         try await request(ConfigResponse.self, ["config", "show", "--json"]).config ?? BridgeConfig()
     }
 
-    func configInit() async throws {
-        _ = try await run(["config", "init", "--json"])
+    /// With `force`, replaces config.json (also an unreadable one) after a backup.
+    func configInit(force: Bool = false) async throws {
+        _ = try await run(["config", "init"] + (force ? ["--force"] : []) + ["--json"])
     }
 
     @discardableResult

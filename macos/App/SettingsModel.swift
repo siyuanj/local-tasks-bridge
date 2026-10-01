@@ -26,6 +26,8 @@ final class SettingsModel: ObservableObject {
     @Published private(set) var saved = BridgeConfig()
     @Published private(set) var errorMessage: String?
     @Published private(set) var saving = false
+    /// config.json could not be read; only "Reset Settings…" helps.
+    @Published private(set) var configUnreadable = false
 
     // General
     @Published private(set) var startAtLogin = false
@@ -106,6 +108,10 @@ final class SettingsModel: ObservableObject {
         }
         do {
             adopt(try await client.configShow())
+            configUnreadable = false
+        } catch let error as EngineError where error.code == EngineErrorCode.configInvalid {
+            configUnreadable = true
+            show(error)
         } catch {
             show(error)
         }
@@ -134,6 +140,10 @@ final class SettingsModel: ObservableObject {
 
     func setStartAtLogin(_ enabled: Bool) async {
         guard let client = app.client, enabled != startAtLogin else {
+            return
+        }
+        if enabled && AppInfo.runsFromTemporaryLocation {
+            errorMessage = AppInfo.temporaryLocationMessage
             return
         }
         updatingLoginItem = true
@@ -355,6 +365,17 @@ final class SettingsModel: ObservableObject {
             } catch {
                 show(error)
             }
+        }
+    }
+
+    func resetSettings() async {
+        do {
+            if try await app.resetSettings() {
+                errorMessage = nil
+                await load()
+            }
+        } catch {
+            show(error)
         }
     }
 

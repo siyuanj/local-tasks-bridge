@@ -34,6 +34,8 @@ final class SetupModel: ObservableObject {
     @Published private(set) var step: Step = .welcome
     @Published private(set) var working = false
     @Published private(set) var workingMessage: String?
+    /// Whether the running action may be cancelled (sign-in and read-only checks).
+    @Published private(set) var workCancellable = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var errorCode: String?
 
@@ -43,6 +45,7 @@ final class SetupModel: ObservableObject {
     @Published private(set) var importedClientHint: String?
     @Published private(set) var accountEmail: String?
     @Published var options = SyncOptions()
+    @Published var showsProxySettings = false
     @Published private(set) var plan: SyncPlan?
     @Published private(set) var loginItemProblem: String?
     @Published private(set) var commandLineToolMessage: String?
@@ -55,6 +58,7 @@ final class SetupModel: ObservableObject {
     private var methodChosen = false
     private var methodAtSignIn: SignInMethod?
     private var optionsPrepared = false
+    private var proxyLoaded = false
 
     init(app: AppModel) {
         self.app = app
@@ -79,6 +83,9 @@ final class SetupModel: ObservableObject {
         case .reminders:
             return remindersAccess == .granted
         case .signInMethod:
+            guard options.proxy.isValid else {
+                return false
+            }
             switch method {
             case .shared: return clientStatus?.bundledAvailable == true
             case .own: return clientStatus?.customReady == true
@@ -135,9 +142,11 @@ final class SetupModel: ObservableObject {
         }
     }
 
-    /// Stops whatever the current step is doing (also used when the window closes).
+    /// Stops the current action if it may be stopped; write commands always finish.
     func cancelWork() {
-        task?.cancel()
+        if workCancellable {
+            task?.cancel()
+        }
     }
 
     func retryLastAction() {
@@ -158,10 +167,16 @@ final class SetupModel: ObservableObject {
         case .reminders:
             remindersAccess = app.reminders.authorization
         case .signInMethod:
-            run { await self.loadClientStatus() }
+            // The proxy is chosen here too, so people behind one can sign in.
+            if !proxyLoaded, let config = app.config {
+                options.proxy = ProxyChoice(configValue: config.proxy)
+                showsProxySettings = options.proxy.mode != .system
+                proxyLoaded = true
+            }
+            run(cancellable: true) { await self.loadClientStatus() }
         case .signIn:
             if accountEmail == nil {
-                run(NSLocalizedString("Checking your Google sign-in…", comment: "Setup progress")) { await self.checkExistingSignIn() }
+                run(NSLocalizedString("Checking your Google sign-in…", comment: "Setup progress"), cancellable: true) { await self.checkExistingSignIn() }
             }
         case .lists:
             if !lists.loaded {
@@ -170,7 +185,7 @@ final class SetupModel: ObservableObject {
         case .options:
             prepareOptions()
         case .firstSync:
-            run(NSLocalizedString("Checking what the first sync will do…", comment: "Setup progress")) { await self.previewFirstSync() }
+            run(NSLocalizedString("Checking what the first sync will do…", comment: "Setup progress"), cancellable: true) { await self.previewFirstSync() }
         case .welcome, .done:
             break
         }
@@ -199,6 +214,10 @@ final class SetupModel: ObservableObject {
     }
 
     func importExistingSetup() {
+        guard !AppInfo.runsFromTemporaryLocation else {
+            errorMessage = AppInfo.temporaryLocationMessage
+            return
+        }
         run(NSLocalizedString("Importing your earlier setup…", comment: "Setup progress")) {
             await self.performImport()
         }
@@ -235,7 +254,7 @@ final class SetupModel: ObservableObject {
     }
 
     func checkPythonAgain() {
-        run(NSLocalizedString("Looking for Python…", comment: "Setup progress")) {
+        run(NSLocalizedString("Looking for Python…", comment: "Setup progress"), cancellable: true) {
             await self.app.locateEngine()
             await self.app.reloadConfig()
             await self.app.refreshStatus()
@@ -281,7 +300,7 @@ final class SetupModel: ObservableObject {
                 method = .own
             }
         } catch {
-            present(error) { self.run { await self.loadClientStatus() } }
+            present(error) { self.run(cancellable: true) { await self.loadClientStatus() } }
         }
     }
 
@@ -318,7 +337,10 @@ final class SetupModel: ObservableObject {
 
     private func saveSignInMethod() async {
         do {
-            try await app.mergeConfig(["oauth_client": .string(method == .shared ? "bundled" : "custom")])
+            try await app.mergeConfig([
+                "oauth_client": .string(method == .shared ? "bundled" : "custom"),
+                "proxy": .string(options.proxy.configValue),
+            ])
             if let methodAtSignIn, methodAtSignIn != method {
                 accountEmail = nil
             }
@@ -331,7 +353,7 @@ final class SetupModel: ObservableObject {
     // MARK: Sign in
 
     func signIn() {
-        run(NSLocalizedString("Waiting for you to finish signing in in your browser…", comment: "Setup progress")) {
+        run(NSLocalizedString("Waiting for you to finish signing in in your browser…", comment: "Setup progress"), cancellable: true) {
             guard let client = self.app.client else {
                 return
             }
@@ -459,14 +481,29 @@ final class SetupModel: ObservableObject {
         }
     }
 
+    /// Resets an unreadable config.json (see `AppModel.resetSettings`).
+    func resetSettings() {
+        run {
+            do {
+                if try await self.app.resetSettings() {
+                    self.show(self.step)
+                }
+            } catch {
+                self.present(error)
+            }
+        }
+    }
+
     // MARK: Helpers
 
     /// Runs one step action at a time; `working` stays true until it ends.
-    private func run(_ message: String? = nil, _ work: @escaping () async -> Void) {
+    /// Only sign-in and read-only actions are `cancellable`.
+    private func run(_ message: String? = nil, cancellable: Bool = false, _ work: @escaping () async -> Void) {
         task?.cancel()
         let token = UUID()
         taskToken = token
         working = true
+        workCancellable = cancellable
         workingMessage = message
         clearError()
         task = Task { [weak self] in

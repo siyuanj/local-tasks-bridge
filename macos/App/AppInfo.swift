@@ -53,6 +53,10 @@ enum AppInfo {
         return path.contains("/AppTranslocation/") || path.hasPrefix("/Volumes/")
     }
 
+    static var temporaryLocationMessage: String {
+        NSLocalizedString("Local Tasks Bridge is running from a temporary location. Quit, move it to your Applications folder, and open it again; otherwise it can’t start at login.", comment: "Setup warning")
+    }
+
     /// True when launchd started this process from the login item.
     static var isLaunchAgentJob: Bool {
         ProcessInfo.processInfo.environment["XPC_SERVICE_NAME"] == launchAgentLabel

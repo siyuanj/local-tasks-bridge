@@ -13,6 +13,8 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
     private let model: AppModel
     private var windows: [Kind: NSWindow] = [:]
     private var cancelWork: [Kind: @MainActor () -> Void] = [:]
+    /// Per window: whether it is busy with something that must not be interrupted.
+    private var busy: [Kind: @MainActor () -> Bool] = [:]
     private var approvalsModel: ApprovalsModel?
     private var settingsModel: SettingsModel?
 
@@ -26,6 +28,7 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
         }
         let setup = SetupModel(app: model)
         setup.close = { [weak self] in self?.close(.setup) }
+        busy[.setup] = { setup.working && !setup.workCancellable }
         present(
             .setup,
             title: NSLocalizedString("Local Tasks Bridge Setup", comment: "Window title"),
@@ -45,6 +48,7 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
         settings.showUninstall = { [weak self] in self?.showUninstall() }
         settings.open(tab: tab, action: action)
         settingsModel = settings
+        busy[.settings] = { settings.rebuildModel?.writing ?? false }
         present(
             .settings,
             title: NSLocalizedString("Local Tasks Bridge Settings", comment: "Window title"),
@@ -65,6 +69,7 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
         let approvals = ApprovalsModel(app: model)
         approvals.close = { [weak self] in self?.close(.approvals) }
         approvalsModel = approvals
+        busy[.approvals] = { approvals.working }
         present(
             .approvals,
             title: NSLocalizedString("Review Pending Changes", comment: "Window title"),
@@ -80,6 +85,7 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
         }
         let uninstall = UninstallModel(app: model)
         uninstall.close = { [weak self] in self?.close(.uninstall) }
+        busy[.uninstall] = { uninstall.working }
         present(
             .uninstall,
             title: NSLocalizedString("Uninstall Local Tasks Bridge", comment: "Window title"),
@@ -95,6 +101,18 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
 
     // MARK: NSWindowDelegate
 
+    /// Write commands always run to the end, so their window stays open meanwhile.
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard let kind = windows.first(where: { $0.value === sender })?.key else {
+            return true
+        }
+        if model.client?.writeInProgress == true || busy[kind]?() == true {
+            NSSound.beep()
+            return false
+        }
+        return true
+    }
+
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow,
               let kind = windows.first(where: { $0.value === window })?.key else {
@@ -102,6 +120,7 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
         }
         cancelWork[kind]?()
         cancelWork[kind] = nil
+        busy[kind] = nil
         windows[kind] = nil
         if kind == .approvals {
             approvalsModel = nil

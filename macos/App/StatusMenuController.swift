@@ -149,6 +149,9 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
         if model.needsApproval {
             menu.addItem(item(NSLocalizedString("Review Pending Changes…", comment: "Menu item"), #selector(reviewChanges)))
         }
+        if model.configUnreadable {
+            menu.addItem(item(NSLocalizedString("Reset Settings…", comment: "Menu item"), #selector(resetSettings)))
+        }
         if model.needsGoogleSignIn {
             menu.addItem(item(NSLocalizedString("Reconnect Google…", comment: "Menu item"), #selector(reconnectGoogle)))
         }
@@ -186,6 +189,9 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
     }
 
     private var headline: String {
+        if model.quitting {
+            return NSLocalizedString("Finishing…", comment: "Menu status headline while quitting")
+        }
         switch model.availability {
         case .locating:
             return NSLocalizedString("Starting…", comment: "Menu status headline")
@@ -248,6 +254,16 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
     }
 
     @objc private func reviewChanges() { windows.showApprovals() }
+
+    @objc private func resetSettings() {
+        Task {
+            do {
+                try await model.resetSettings()
+            } catch {
+                Alerts.show(error)
+            }
+        }
+    }
     @objc private func reconnectGoogle() {
         // A changed account needs a rebuilt sync map; an expired sign-in only a new sign-in.
         let action: SettingsModel.Action = model.status?.condition == "account_binding_required" ? .rebuild : .reconnect

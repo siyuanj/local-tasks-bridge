@@ -105,7 +105,7 @@ final class EngineSupervisor {
         }
         if !checkedForOrphans {
             checkedForOrphans = true
-            Self.terminateOrphanedLoops(enginePath: client.runtime.engine.path, log: log)
+            Self.terminateOrphanedLoops(enginePath: client.runtime.engine.path, configPath: client.paths.configFile.path, log: log)
         }
         let process = client.makeRunLoopProcess { [weak self] stream, line in
             DispatchQueue.main.async {
@@ -206,7 +206,12 @@ final class EngineSupervisor {
 
     /// A previous copy of the app that crashed or was force-quit leaves its
     /// `run-loop` child running under launchd. Stop those before starting a new one.
-    private static func terminateOrphanedLoops(enginePath: String, log: AppLog) {
+    /// Whether a `ps` command line is a `run-loop` of this engine and config.
+    static func isOrphanedLoop(command: String, enginePath: String, configPath: String) -> Bool {
+        command.contains(enginePath) && command.contains("--config \(configPath) ") && command.contains(" run-loop")
+    }
+
+    private static func terminateOrphanedLoops(enginePath: String, configPath: String, log: AppLog) {
         let ps = Process()
         ps.executableURL = URL(fileURLWithPath: "/bin/ps")
         ps.arguments = ["-axww", "-o", "pid=,ppid=,command="]
@@ -226,7 +231,7 @@ final class EngineSupervisor {
                 continue
             }
             let command = String(fields[2])
-            if command.contains(enginePath) && command.contains(" run-loop") {
+            if isOrphanedLoop(command: command, enginePath: enginePath, configPath: configPath) {
                 log.write("stopping orphaned run-loop (pid \(pid)) left by an earlier copy of the app")
                 kill(pid, SIGTERM)
             }

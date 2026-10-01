@@ -22,6 +22,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var config: BridgeConfig?
     @Published private(set) var cycleInProgress = false
     @Published private(set) var supervisorPhase: EngineSupervisor.Phase = .stopped
+    /// Set while Quit waits for write commands and the loop to finish.
+    @Published private(set) var quitting = false
 
     private(set) var client: EngineClient?
     /// While set (during uninstall), the loop is not restarted.
@@ -32,6 +34,8 @@ final class AppModel: ObservableObject {
     private var pendingStatusRefresh: DispatchWorkItem?
     private var pendingLocalSync: DispatchWorkItem?
     private var lastCycleFinishedAt: Date?
+    /// A Reminders change arrived during a cycle; sync again once it is over.
+    private var deferredLocalChange = false
 
     /// Set by the app delegate: opens Review Pending Changes.
     var showApprovals: (() -> Void)?
@@ -85,6 +89,11 @@ final class AppModel: ObservableObject {
         return condition == "auth_required" || condition == "account_binding_required"
     }
 
+    /// `status` could not read config.json; only resetting it helps.
+    var configUnreadable: Bool {
+        statusError?.code == EngineErrorCode.configInvalid
+    }
+
     var canSyncNow: Bool {
         client != nil && status?.isSetupCompleted == true && status?.isPaused == false
     }
@@ -128,10 +137,14 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Stops read-only commands, waits for write commands (they are never
+    /// interrupted), then stops the loop, which finishes a cycle in progress.
     func prepareToQuit() async {
+        quitting = true
         pollTimer?.invalidate()
         pendingLocalSync?.cancel()
-        client?.terminateAll()
+        client?.terminateReadOnlyCommands()
+        await client?.waitForWrites()
         await supervisor.stop()
         log.write("Local Tasks Bridge quit")
         log.flush()
@@ -223,8 +236,8 @@ final class AppModel: ObservableObject {
 
     // MARK: Actions
 
-    /// Saves settings with `config merge` and restarts the loop (once it is
-    /// idle) so the next cycle uses them right away.
+    /// Saves settings with `config merge`. Keys that change what the loop does
+    /// restart it (once it is idle) so the next cycle uses them right away.
     @discardableResult
     func mergeConfig(_ values: [String: JSONValue]) async throws -> BridgeConfig {
         guard let client else {
@@ -232,7 +245,7 @@ final class AppModel: ObservableObject {
         }
         let updated = try await client.configMerge(values)
         config = updated
-        if supervisor.isActive {
+        if supervisor.isActive && ConfigKeys.affectRunningLoop(Set(values.keys)) {
             supervisor.restart()
         }
         scheduleStatusRefresh()
@@ -266,6 +279,10 @@ final class AppModel: ObservableObject {
         guard let client else {
             throw EngineError(code: EngineErrorCode.engineUnavailable)
         }
+        // A login item pointing into App Translocation would break after restart.
+        guard !AppInfo.runsFromTemporaryLocation else {
+            throw EngineError(code: EngineErrorCode.failed, message: AppInfo.temporaryLocationMessage)
+        }
         config = try await client.configMerge(["setup_completed_at": .string(EngineDate.string(from: Date()))])
         var loginItemProblem: EngineError?
         do {
@@ -279,6 +296,28 @@ final class AppModel: ObservableObject {
         return loginItemProblem
     }
 
+    /// Replaces an unreadable config.json with the defaults (`config init
+    /// --force` backs the old file up first), after asking. Returns false if
+    /// the person cancelled.
+    @discardableResult
+    func resetSettings() async throws -> Bool {
+        guard let client else {
+            throw EngineError(code: EngineErrorCode.engineUnavailable)
+        }
+        let confirmed = Alerts.confirm(
+            title: NSLocalizedString("Reset settings?", comment: "Alert title"),
+            message: NSLocalizedString("The settings file is copied to the backups folder and replaced with the default settings. Your Google sign-in and sync history stay as they are.", comment: "Alert message"),
+            confirmTitle: NSLocalizedString("Reset Settings", comment: "Button")
+        )
+        guard confirmed else {
+            return false
+        }
+        try await client.configInit(force: true)
+        await reloadConfig()
+        await refreshStatus()
+        return true
+    }
+
     // MARK: Engine events
 
     private func handle(_ event: EngineEvent) {
@@ -288,6 +327,9 @@ final class AppModel: ObservableObject {
         case "cycle_finished":
             cycleInProgress = false
             lastCycleFinishedAt = Date()
+            if deferredLocalChange {
+                scheduleLocalSync(after: Self.ownWriteQuietPeriod)
+            }
         case "notification":
             if config?.macosNotifications ?? true {
                 notifier.post(
@@ -324,22 +366,36 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Debounces local changes into one `sync-now`. Changes during a cycle, or
+    /// just after one (often the engine's own writes), are deferred until the
+    /// cycle has ended and the quiet period has passed; they are never dropped.
     private func remindersDidChange() {
-        guard canSyncNow, !cycleInProgress else {
+        guard canSyncNow else {
             return
         }
-        if let finished = lastCycleFinishedAt, Date().timeIntervalSince(finished) < Self.ownWriteQuietPeriod {
+        if cycleInProgress {
+            deferredLocalChange = true
             return
         }
+        let quietLeft = lastCycleFinishedAt.map { Self.ownWriteQuietPeriod - Date().timeIntervalSince($0) } ?? 0
+        scheduleLocalSync(after: max(Self.localChangeDebounce, quietLeft))
+    }
+
+    private func scheduleLocalSync(after delay: TimeInterval) {
         pendingLocalSync?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            guard let self, self.canSyncNow, !self.cycleInProgress else {
+            guard let self, self.canSyncNow else {
                 return
             }
+            if self.cycleInProgress {
+                self.deferredLocalChange = true
+                return
+            }
+            self.deferredLocalChange = false
             Task { try? await self.client?.syncNow() }
         }
         pendingLocalSync = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.localChangeDebounce, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 }
 

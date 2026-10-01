@@ -13,6 +13,8 @@ final class RebuildModel: ObservableObject {
     @Published private(set) var needsSignIn = false
     @Published private(set) var appleAccounts: [String] = []
     @Published private(set) var working = false
+    /// `rebuild --yes` is running: it always finishes, so the sheet stays open.
+    @Published private(set) var writing = false
     @Published private(set) var workingMessage: String?
     @Published private(set) var plan: SyncPlan?
     @Published private(set) var rebuilt = false
@@ -26,6 +28,7 @@ final class RebuildModel: ObservableObject {
 
     var canPreview: Bool { !working && !checkingAccounts && googleAccount != nil }
     var canRebuild: Bool { canPreview && plan != nil && !rebuilt }
+    var canSignInAgain: Bool { !working && !checkingAccounts && googleAccount != nil && !rebuilt }
 
     /// Reads the Google account (`account --json`) and the Reminders accounts (`lists --json`).
     func loadAccounts() {
@@ -77,7 +80,7 @@ final class RebuildModel: ObservableObject {
     }
 
     func rebuild() {
-        perform(NSLocalizedString("Rebuilding the sync map…", comment: "Rebuild progress")) { client in
+        perform(NSLocalizedString("Rebuilding the sync map…", comment: "Rebuild progress"), writes: true) { client in
             _ = try await client.rebuild(dryRun: false)
             self.rebuilt = true
             _ = try? await self.app.currentStatus()
@@ -86,15 +89,18 @@ final class RebuildModel: ObservableObject {
     }
 
     func cancelWork() {
-        task?.cancel()
+        if !writing {
+            task?.cancel()
+        }
     }
 
-    private func perform(_ message: String, _ work: @escaping (EngineClient) async throws -> Void) {
-        guard let client = app.client else {
+    private func perform(_ message: String, writes: Bool = false, _ work: @escaping (EngineClient) async throws -> Void) {
+        guard let client = app.client, !writing else {
             return
         }
         task?.cancel()
         working = true
+        writing = writes
         workingMessage = message
         errorMessage = nil
         task = Task {
@@ -104,6 +110,7 @@ final class RebuildModel: ObservableObject {
                 show(error)
             }
             working = false
+            writing = false
             workingMessage = nil
         }
     }
@@ -151,6 +158,9 @@ struct RebuildView: View {
                             ? NSLocalizedString("None found", comment: "Rebuild row value")
                             : model.appleAccounts.joined(separator: ", "))
                     }
+                    if model.canSignInAgain {
+                        Button(NSLocalizedString("Use a Different Google Account", comment: "Button")) { model.signIn() }
+                    }
                     if model.needsSignIn {
                         Text(NSLocalizedString("Sign in first so Local Tasks Bridge knows which Google account to pair.", comment: "Rebuild note"))
                             .font(.caption)
@@ -195,6 +205,7 @@ struct RebuildView: View {
                         model.close()
                     }
                     .keyboardShortcut(.cancelAction)
+                    .disabled(model.writing)
                     Button(NSLocalizedString("Preview", comment: "Button")) { model.preview() }
                         .disabled(!model.canPreview)
                     Button(NSLocalizedString("Rebuild", comment: "Button")) { model.rebuild() }
@@ -204,7 +215,8 @@ struct RebuildView: View {
             }
         }
         .padding(20)
-        .frame(width: 520, height: 460)
+        .frame(width: 520, height: 480)
+        .interactiveDismissDisabled(model.writing)
         .onAppear { model.loadAccounts() }
     }
 }

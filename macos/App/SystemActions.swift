@@ -110,9 +110,12 @@ enum SystemActions {
 enum CommandLineTool {
     enum InstallError: LocalizedError {
         case occupied(String)
+        case temporaryLocation
 
         var errorDescription: String? {
             switch self {
+            case .temporaryLocation:
+                return AppInfo.temporaryLocationMessage
             case .occupied(let path):
                 return String(
                     format: NSLocalizedString("%@ already exists and is not a link to Local Tasks Bridge. Remove it first.", comment: "Command-line tool install error; %@ is a path"),
@@ -134,6 +137,10 @@ enum CommandLineTool {
     }
 
     static func install(at link: URL) throws {
+        // A link into App Translocation stops working once the app is moved.
+        guard !AppInfo.runsFromTemporaryLocation else {
+            throw InstallError.temporaryLocation
+        }
         let fileManager = FileManager.default
         try fileManager.createDirectory(
             at: link.deletingLastPathComponent(),

@@ -82,12 +82,23 @@ private struct GeneralSettings: View {
 
     var body: some View {
         Form {
+            if model.configUnreadable {
+                Section {
+                    ErrorText(message: model.errorMessage ?? EngineError.fallbackMessage(for: EngineErrorCode.configInvalid))
+                    Button(NSLocalizedString("Reset Settings…", comment: "Menu item")) {
+                        Task { await model.resetSettings() }
+                    }
+                }
+            }
             Section {
                 Toggle(NSLocalizedString("Start at login", comment: "Setting"), isOn: Binding(
                     get: { model.startAtLogin },
                     set: { value in Task { await model.setStartAtLogin(value) } }
                 ))
-                .disabled(model.updatingLoginItem)
+                .disabled(model.updatingLoginItem || (AppInfo.runsFromTemporaryLocation && !model.startAtLogin))
+                if AppInfo.runsFromTemporaryLocation {
+                    ErrorText(message: AppInfo.temporaryLocationMessage)
+                }
                 Text(NSLocalizedString("Local Tasks Bridge opens in the menu bar when you log in and keeps syncing in the background.", comment: "Setting detail"))
                     .font(.caption)
                     .foregroundColor(.secondary)
@@ -355,6 +366,7 @@ private struct AdvancedSettings: View {
                         : NSLocalizedString("Install Command-Line Tool", comment: "Button")) {
                         model.installCommandLineTool()
                     }
+                    .disabled(AppInfo.runsFromTemporaryLocation)
                 }
                 if let message = model.commandLineToolMessage {
                     Text(message)

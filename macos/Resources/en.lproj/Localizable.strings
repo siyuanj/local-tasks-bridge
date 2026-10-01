@@ -84,6 +84,7 @@
 "Find Local Tasks Bridge in the menu bar at the top of the screen." = "Find Local Tasks Bridge in the menu bar at the top of the screen.";
 "Finish Setup…" = "Finish Setup…";
 "Finishing setup…" = "Finishing setup…";
+"Finishing…" = "Finishing…";
 "First Sync" = "First Sync";
 "General" = "General";
 "GitHub answered with status %d." = "GitHub answered with status %d.";
@@ -155,6 +156,7 @@
 "MIT License. A fork of syncweave-labs/reminders-task-bridge, maintained by Siyuan Jiang." = "MIT License. A fork of syncweave-labs/reminders-task-bridge, maintained by Siyuan Jiang.";
 "My own Google Cloud OAuth client" = "My own Google Cloud OAuth client";
 "Network" = "Network";
+"Network settings (proxy)" = "Network settings (proxy)";
 "No data folder yet" = "No data folder yet";
 "No Google sign-in method is set up yet." = "No Google sign-in method is set up yet.";
 "No logs yet" = "No logs yet";
@@ -204,6 +206,9 @@
 "Reminders" = "Reminders";
 "Reminders are copied to Google Tasks; changes made in Google Tasks are not copied back." = "Reminders are copied to Google Tasks; changes made in Google Tasks are not copied back.";
 "Remove Local Tasks Bridge from this Mac" = "Remove Local Tasks Bridge from this Mac";
+"Reset Settings" = "Reset Settings";
+"Reset settings?" = "Reset settings?";
+"Reset Settings…" = "Reset Settings…";
 "Restart Now" = "Restart Now";
 "Resume Sync" = "Resume Sync";
 "Revert" = "Revert";
@@ -258,6 +263,7 @@
 "The newer change wins" = "The newer change wins";
 "The pending changes are different now. Review them again." = "The pending changes are different now. Review them again.";
 "The rebuild will:" = "The rebuild will:";
+"The settings file is copied to the backups folder and replaced with the default settings. Your Google sign-in and sync history stay as they are." = "The settings file is copied to the backups folder and replaced with the default settings. Your Google sign-in and sync history stay as they are.";
 "The shared sign-in has one daily Google quota for everyone who uses it, so every 5 minutes is recommended." = "The shared sign-in has one daily Google quota for everyone who uses it, so every 5 minutes is recommended.";
 "The sync engine could not be started." = "The sync engine could not be started.";
 "The sync engine did not understand the request. Reinstall Local Tasks Bridge so the app and engine match." = "The sync engine did not understand the request. Reinstall Local Tasks Bridge so the app and engine match.";
@@ -282,6 +288,7 @@
 "Update %d items" = "Update %d items";
 "Update 1 item" = "Update 1 item";
 "Use a Different Account" = "Use a Different Account";
+"Use a Different Google Account" = "Use a Different Google Account";
 "Use my own Google Cloud OAuth client (advanced, no user limits)" = "Use my own Google Cloud OAuth client (advanced, no user limits)";
 "Use the system proxy settings (recommended)" = "Use the system proxy settings (recommended)";
 "Use this proxy:" = "Use this proxy:";

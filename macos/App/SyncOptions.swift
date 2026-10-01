@@ -91,6 +91,19 @@ struct SyncOptions: Equatable {
     }
 }
 
+enum ConfigKeys {
+    private static let loopKeys: Set<String> = [
+        "include_lists", "list_policies", "bidirectional", "delete_stale", "conflict_policy",
+        "sync_interval_seconds", "max_destructive_changes", "max_destructive_ratio",
+        "proxy", "oauth_client", "language",
+    ]
+
+    /// Whether saving these keys should restart the supervised `run-loop`.
+    static func affectRunningLoop(_ keys: Set<String>) -> Bool {
+        keys.contains { loopKeys.contains($0) || $0.hasPrefix("tasks_") }
+    }
+}
+
 /// Human summary of a sync plan's `counts` (contract `sync`).
 struct PlanSummary: Equatable {
     var addToGoogle = 0

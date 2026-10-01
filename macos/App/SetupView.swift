@@ -57,7 +57,7 @@ struct SetupView: View {
                         .foregroundColor(.secondary)
                         .lineLimit(2)
                 }
-                if model.step == .signIn || model.step == .firstSync {
+                if model.workCancellable {
                     Button(NSLocalizedString("Cancel", comment: "Button")) { model.cancelWork() }
                 }
             }
@@ -103,10 +103,13 @@ private struct SetupErrorView: View {
         VStack(alignment: .leading, spacing: 8) {
             ErrorText(message: message)
             HStack {
-                if let recovery {
+                if model.errorCode == EngineErrorCode.configInvalid {
+                    // Retrying cannot fix an unreadable settings file.
+                    Button(NSLocalizedString("Reset Settings…", comment: "Menu item")) { model.resetSettings() }
+                } else if let recovery {
                     Button(recovery.title) { model.jump(to: recovery.step) }
                 }
-                if model.canRetry {
+                if model.canRetry && model.errorCode != EngineErrorCode.configInvalid {
                     Button(NSLocalizedString("Try Again", comment: "Button")) { model.retryLastAction() }
                 }
             }
@@ -177,14 +180,14 @@ private struct WelcomeStep: View {
                         Text(NSLocalizedString("Import it to keep your list choices, sync history, and Google sign-in. Its old background job is turned off.", comment: "Setup text"))
                             .fixedSize(horizontal: false, vertical: true)
                         Button(NSLocalizedString("Import My Existing Setup", comment: "Button")) { model.importExistingSetup() }
-                            .disabled(model.working)
+                            .disabled(model.working || AppInfo.runsFromTemporaryLocation)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(6)
                 }
             }
             if AppInfo.runsFromTemporaryLocation {
-                ErrorText(message: NSLocalizedString("Local Tasks Bridge is running from a temporary location. Quit, move it to your Applications folder, and open it again; otherwise it can’t start at login.", comment: "Setup warning"))
+                ErrorText(message: AppInfo.temporaryLocationMessage)
             }
         }
     }
@@ -283,6 +286,12 @@ private struct SignInMethodStep: View {
                     }
                 }
                 .padding(.leading, model.clientStatus?.bundledAvailable == true ? 24 : 0)
+            }
+            // A view-owned @State would need the SwiftUI macro plugin, which the
+            // Command Line Tools do not ship, so the model keeps this flag.
+            DisclosureGroup(NSLocalizedString("Network settings (proxy)", comment: "Setup disclosure"), isExpanded: $model.showsProxySettings) {
+                ProxyEditor(choice: $model.options.proxy)
+                    .padding(.top, 6)
             }
         }
     }
@@ -403,7 +412,7 @@ private struct FirstSyncStep: View {
                     noDeletionNote: NSLocalizedString("Nothing will be deleted on the first sync.", comment: "First sync summary")
                 )
                 if AppInfo.runsFromTemporaryLocation {
-                    ErrorText(message: NSLocalizedString("Local Tasks Bridge is running from a temporary location. Quit, move it to your Applications folder, and open it again; otherwise it can’t start at login.", comment: "Setup warning"))
+                    ErrorText(message: AppInfo.temporaryLocationMessage)
                 }
                 Button(NSLocalizedString("Start Syncing", comment: "Button")) { model.startSyncing() }
                     .controlSize(.large)
@@ -444,6 +453,7 @@ private struct DoneStep: View {
                         : NSLocalizedString("Install Command-Line Tool", comment: "Button")) {
                         model.installCommandLineTool()
                     }
+                    .disabled(AppInfo.runsFromTemporaryLocation)
                     if let message = model.commandLineToolMessage {
                         Text(message)
                             .font(.caption)

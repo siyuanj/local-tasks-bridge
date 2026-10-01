@@ -226,7 +226,7 @@ do {
     let python = PythonLocator.findPython(bundle: work.appendingPathComponent("NoSuch.app"), environment: ProcessInfo.processInfo.environment)
         ?? URL(fileURLWithPath: "/usr/bin/python3")
     let runtime = EngineRuntime(python: python,
-                                engine: repoRoot.appendingPathComponent("macos/Tests/AppCore/fake_run_loop.py"),
+                                engine: repoRoot.appendingPathComponent("macos/Tests/AppCore/fake_engine.py"),
                                 bundle: work.appendingPathComponent("Fake.app"))
     let client = EngineClient(runtime: runtime, paths: paths, log: log)
 
@@ -255,6 +255,71 @@ do {
     let stopTook = Date().timeIntervalSince(stopStarted)
     check(stopTook >= 0.9 && stopTook < 10, "stop() waits for a loop finishing its cycle (took \(stopTook) s)")
     check(events.last == "cycle_finished", "the cycle in progress finished before exit: \(events)")
+}
+
+// MARK: - Write commands and logging
+
+section("Write commands are never interrupted")
+do {
+    check(EngineClient.isWriteCommand(["sync", "--no-delete-stale", "--json"]), "a live sync writes")
+    check(!EngineClient.isWriteCommand(["sync", "--dry-run", "--no-delete-stale", "--json"]), "a dry run is read-only")
+    check(EngineClient.isWriteCommand(["rebuild", "--yes", "--json"]) && !EngineClient.isWriteCommand(["rebuild", "--dry-run", "--json"]), "rebuild --yes writes, --dry-run does not")
+    for command in [["approvals", "apply", "f", "--json"], ["approvals", "hold", "f", "--json"], ["migrate", "--yes", "--json"],
+                    ["uninstall", "--yes", "--json"], ["signout", "--revoke", "--json"], ["client", "import", "p", "--json"],
+                    ["config", "init", "--force", "--json"], ["config", "merge", "--json"], ["agent", "install", "--app", "a", "--json"]] {
+        check(EngineClient.isWriteCommand(command), "\(command.prefix(2).joined(separator: " ")) writes")
+    }
+    for command in [["auth", "--json"], ["status", "--json"], ["account", "--json"], ["lists", "--json"], ["approvals", "show", "--json"],
+                    ["config", "show", "--json"], ["client", "status", "--json"], ["doctor", "--json"], ["agent", "status", "--json"]] {
+        check(!EngineClient.isWriteCommand(command), "\(command.prefix(2).joined(separator: " ")) can be cancelled")
+    }
+    check(ConfigKeys.affectRunningLoop(["include_lists"]) && ConfigKeys.affectRunningLoop(["tasks_sync_undated"]) && ConfigKeys.affectRunningLoop(["proxy"]), "sync-behaviour keys restart the loop")
+    check(!ConfigKeys.affectRunningLoop(["macos_notifications", "setup_completed_at"]), "other keys do not restart the loop")
+    let engine = "/A/Local Tasks Bridge.app/Contents/Resources/engine/local_tasks_bridge.py"
+    check(EngineSupervisor.isOrphanedLoop(command: "/usr/bin/python3 -I -B \(engine) --config /h/.config/local-tasks-bridge/config.json run-loop --log-file /l", enginePath: engine, configPath: "/h/.config/local-tasks-bridge/config.json"), "an orphaned loop of this engine and config matches")
+    check(!EngineSupervisor.isOrphanedLoop(command: "/usr/bin/python3 -B \(engine) --config /other/config.json run-loop", enginePath: engine, configPath: "/h/.config/local-tasks-bridge/config.json"), "a loop with another config is left alone")
+
+    let logURL = work.appendingPathComponent("write-logs/app.log")
+    let log = AppLog(url: logURL)
+    let python = PythonLocator.findPython(bundle: work.appendingPathComponent("NoSuch.app"), environment: ProcessInfo.processInfo.environment)
+        ?? URL(fileURLWithPath: "/usr/bin/python3")
+    let client = EngineClient(
+        runtime: EngineRuntime(python: python, engine: repoRoot.appendingPathComponent("macos/Tests/AppCore/fake_engine.py"), bundle: work.appendingPathComponent("Fake.app")),
+        paths: AppPaths(configDirectory: work.appendingPathComponent("w"), configFile: work.appendingPathComponent("w/config.json"), logDirectory: work.appendingPathComponent("write-logs")),
+        log: log
+    )
+
+    let started = Date()
+    let merge = Task { try await client.configMerge(["include_lists": .strings(["Work"])]) }
+    try await Task.sleep(nanoseconds: 300_000_000)
+    check(client.writeInProgress, "a running config merge counts as a write")
+    merge.cancel()
+    client.terminateReadOnlyCommands()
+    let merged = try await merge.value
+    check(merged.includeLists == ["Work"] && Date().timeIntervalSince(started) >= 0.9, "a cancelled write still runs to the end")
+    await client.waitForWrites()
+    check(!client.writeInProgress, "waitForWrites returns once writes are done")
+
+    let statusStarted = Date()
+    let status = Task { try await client.status() }
+    try await Task.sleep(nanoseconds: 300_000_000)
+    status.cancel()
+    do {
+        _ = try await status.value
+        check(false, "a cancelled read-only command stops")
+    } catch let error as EngineError {
+        check(error.isCancellation && Date().timeIntervalSince(statusStarted) < 5, "a read-only command is cancelled with SIGTERM")
+    }
+
+    do {
+        _ = try await client.doctor()
+    } catch {}
+    log.flush()
+    let text = (try? String(contentsOf: logURL, encoding: .utf8)) ?? ""
+    check(text.contains("engine doctor: failed (exit 1)"), "a failed command is logged by name, code, and exit status")
+    check(!text.contains("SECRET-TITLE"), "engine stderr does not reach app.log")
+} catch {
+    check(false, "write command tests threw \(error)")
 }
 
 // MARK: - App log

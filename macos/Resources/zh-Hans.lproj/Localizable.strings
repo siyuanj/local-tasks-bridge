@@ -84,6 +84,7 @@
 "Find Local Tasks Bridge in the menu bar at the top of the screen." = "在屏幕顶部的菜单栏中可以找到 Local Tasks Bridge。";
 "Finish Setup…" = "完成设置…";
 "Finishing setup…" = "正在完成设置…";
+"Finishing…" = "正在完成…";
 "First Sync" = "首次同步";
 "General" = "通用";
 "GitHub answered with status %d." = "GitHub 返回了状态码 %d。";
@@ -155,6 +156,7 @@
 "MIT License. A fork of syncweave-labs/reminders-task-bridge, maintained by Siyuan Jiang." = "MIT 许可证。基于 syncweave-labs/reminders-task-bridge 的分支，由 Siyuan Jiang 维护。";
 "My own Google Cloud OAuth client" = "我自己的 Google Cloud OAuth 客户端";
 "Network" = "网络";
+"Network settings (proxy)" = "网络设置（代理）";
 "No data folder yet" = "还没有数据文件夹";
 "No Google sign-in method is set up yet." = "尚未设置 Google 登录方式。";
 "No logs yet" = "还没有日志";
@@ -204,6 +206,9 @@
 "Reminders" = "提醒事项";
 "Reminders are copied to Google Tasks; changes made in Google Tasks are not copied back." = "提醒事项会复制到 Google Tasks；在 Google Tasks 中做的更改不会同步回来。";
 "Remove Local Tasks Bridge from this Mac" = "从这台 Mac 上移除 Local Tasks Bridge";
+"Reset Settings" = "重置设置";
+"Reset settings?" = "要重置设置吗？";
+"Reset Settings…" = "重置设置…";
 "Restart Now" = "立即重新启动";
 "Resume Sync" = "恢复同步";
 "Revert" = "复原";
@@ -258,6 +263,7 @@
 "The newer change wins" = "以较新的更改为准";
 "The pending changes are different now. Review them again." = "待确认的更改已经变化，请重新查看。";
 "The rebuild will:" = "重建将会：";
+"The settings file is copied to the backups folder and replaced with the default settings. Your Google sign-in and sync history stay as they are." = "设置文件会先复制到备份文件夹，再替换为默认设置。你的 Google 登录和同步记录保持不变。";
 "The shared sign-in has one daily Google quota for everyone who uses it, so every 5 minutes is recommended." = "共享登录的所有用户共用一个 Google 每日配额，因此建议每 5 分钟同步一次。";
 "The sync engine could not be started." = "无法启动同步引擎。";
 "The sync engine did not understand the request. Reinstall Local Tasks Bridge so the app and engine match." = "同步引擎无法理解此请求。请重新安装 Local Tasks Bridge，使应用与引擎版本一致。";
@@ -282,6 +288,7 @@
 "Update %d items" = "更新 %d 项";
 "Update 1 item" = "更新 1 项";
 "Use a Different Account" = "使用其他账号";
+"Use a Different Google Account" = "使用其他 Google 账号";
 "Use my own Google Cloud OAuth client (advanced, no user limits)" = "使用我自己的 Google Cloud OAuth 客户端（高级，无用户数限制）";
 "Use the system proxy settings (recommended)" = "使用系统代理设置（推荐）";
 "Use this proxy:" = "使用此代理：";

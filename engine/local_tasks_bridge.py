@@ -347,6 +347,11 @@ class OAuthTokenError(RuntimeError):
     def invalid_grant(self) -> bool:
         return self.error == "invalid_grant"
 
+    @property
+    def unreachable(self) -> bool:
+        """Google could not be reached or is temporarily failing; retry later."""
+        return self.status == 0 or self.status == 429 or self.status >= 500
+
 
 class AuthenticationRequired(RuntimeError):
     pass
@@ -370,14 +375,17 @@ class OAuthClientMissing(SystemExit):
 
 def google_api_failure_summary(status: int) -> str:
     if status in (401, 403):
-        action = "Reauthorize Google access and confirm the Tasks API permission."
+        action = tr(
+            "Reauthorize Google access and confirm the Tasks API permission.",
+            "请重新授权 Google，并确认已授予 Tasks API 权限。",
+        )
     elif status == 429:
-        action = "Google rate-limited the request; wait before retrying."
+        action = tr("Google rate-limited the request; wait before retrying.", "Google 限制了请求频率，请稍后再试。")
     elif status >= 500:
-        action = "Google is temporarily unavailable; retry later."
+        action = tr("Google is temporarily unavailable; retry later.", "Google 暂时不可用，请稍后重试。")
     else:
-        action = "Review the private log, then retry the diagnostic."
-    return f"Google API request failed (HTTP {status}). {action}"
+        action = tr("Review the private log, then retry the diagnostic.", "请查看私有日志后再重试诊断。")
+    return tr(f"Google API request failed (HTTP {status}). {action}", f"Google API 请求失败（HTTP {status}）。{action}")
 
 
 def eprint(message: str) -> None:
@@ -428,21 +436,42 @@ def read_json(path: Path) -> dict[str, Any]:
         return json.load(handle)
 
 
+def ensure_private_dir(directory: Path) -> None:
+    """Create a missing directory as 0700; leave existing directories alone."""
+
+    if directory.is_dir():
+        return
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(directory, 0o700)
+
+
+def open_private_append(path: Path) -> Any:
+    ensure_private_dir(path.parent)
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    return os.fdopen(descriptor, "a", encoding="utf-8")
+
+
 def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    with tmp_path.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2, sort_keys=True, ensure_ascii=False)
-        handle.write("\n")
-    os.chmod(tmp_path, 0o600)
-    tmp_path.replace(path)
+    ensure_private_dir(path.parent)
+    # A unique 0600 temp file: concurrent writers never share it, and the
+    # contents are never readable by others, even for a moment.
+    descriptor, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True, ensure_ascii=False)
+            handle.write("\n")
+        os.chmod(tmp_name, 0o600)
+        os.replace(tmp_name, path)
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp_name)
+        raise
 
 
 @contextlib.contextmanager
 def sync_lock(config: dict[str, Any], wait: bool) -> Any:
     lock_path = expand_path(config["state_path"]).with_suffix(".lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("a", encoding="utf-8") as handle:
+    with open_private_append(lock_path) as handle:
         flags = fcntl.LOCK_EX if wait else fcntl.LOCK_EX | fcntl.LOCK_NB
         try:
             fcntl.flock(handle.fileno(), flags)
@@ -822,6 +851,8 @@ def list_allows_delete_propagation(
     safety_allows_deletes: bool = True,
 ) -> bool:
     if config.get("_disable_delete_propagation"):
+        return False
+    if list_title in (config.get("_first_sync_lists") or ()):
         return False
     return bool(safety_allows_deletes and list_sync_policy(config, list_title)["delete_propagation"])
 
@@ -1539,6 +1570,8 @@ def refresh_token_with_fallback(config: dict[str, Any], token: dict[str, Any]) -
     try:
         return refresh_token(config, token)
     except OAuthTokenError as exc:
+        if exc.unreachable:
+            raise
         if not exc.invalid_grant:
             raise SystemExit(str(exc)) from exc
 
@@ -1560,6 +1593,8 @@ def refresh_token_with_fallback(config: dict[str, Any], token: dict[str, Any]) -
             try:
                 return refresh_token(config, fallback)
             except OAuthTokenError as fallback_exc:
+                if fallback_exc.unreachable:
+                    raise
                 if not fallback_exc.invalid_grant:
                     raise SystemExit(str(fallback_exc)) from fallback_exc
 
@@ -3141,6 +3176,7 @@ def plan_google_task_changes_to_reminders(
     source_controlled: set[tuple[str, str]] = set()
     actions: list[dict[str, Any]] = []
     seen_deleted_uids: set[tuple[str, str]] = set()
+    kept_over_deletion: set[tuple[str, str]] = set()
 
     if allow_deletes:
         for list_title, tasks in deleted_tasks_by_list.items():
@@ -3184,6 +3220,8 @@ def plan_google_task_changes_to_reminders(
                     if policy["direction"] != "google_to_apple":
                         if policy["conflict_policy"] == "newer_wins":
                             if not google_task_is_newer_than_reminder(task, reminder):
+                                # The reminder was edited after the deletion.
+                                kept_over_deletion.add((list_title, uid))
                                 continue
                         else:
                             title = str(task.get("title") or reminder.get("title") or record.get("title") or uid)
@@ -3380,6 +3418,22 @@ def plan_google_task_changes_to_reminders(
                     uid, body, digest, reminder = matched
                     if uid in existing_by_uid:
                         continue
+                    google_notes = strip_tasks_sync_metadata(str(task.get("notes") or "")).strip()
+                    apple_notes = str(reminder.get("notes") or "").strip()
+                    if google_notes and google_notes not in apple_notes:
+                        # Pairing must not overwrite notes written in Google:
+                        # keep them on both sides (after any Apple notes).
+                        merged = f"{apple_notes}\n\n{google_notes}" if apple_notes else google_notes
+                        body = {**body, "notes": reminder_tasks_notes({**reminder, "notes": merged}, uid, digest)}
+                        operations.append(
+                            {
+                                "stable_id": reminder.get("stable_id") or reminder.get("external_id") or reminder.get("id"),
+                                "id": reminder.get("id"),
+                                "notes": merged,
+                            }
+                        )
+                        operation_contexts.append(("update", None))
+                        actions.append(planned_mutation("apple_reminders", "update", [list_title, tasklist_id, uid]))
                     google_patches.append((list_title, tasklist_id, uid, body, digest, reminder, task))
                     source_controlled.add((list_title, uid))
                     actions.append(
@@ -3420,6 +3474,7 @@ def plan_google_task_changes_to_reminders(
         "conflicts": conflicts,
         "blocked": blocked,
         "source_controlled": source_controlled,
+        "kept_over_deletion": kept_over_deletion,
         "actions": actions,
     }
 
@@ -3756,7 +3811,7 @@ def sync_paused(config: dict[str, Any]) -> bool:
 
 
 def touch_private_file(path: Path, content: str = "") -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_private_dir(path.parent)
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
         handle.write(content)
@@ -3956,6 +4011,8 @@ def check_google_connection(config: dict[str, Any]) -> dict[str, Any]:
             "message": tr("Google authorization has expired or was revoked.", "Google 授权已过期或已被撤销。"),
         }
     except OAuthTokenError as exc:
+        if exc.unreachable:
+            return {"state": "unavailable", "source": "network", "tasklist_count": 0, "message": message_network()}
         return {"state": "auth_required", "source": "oauth", "tasklist_count": 0, "message": str(exc)}
     except GoogleApiError as exc:
         state = "auth_required" if exc.status in (401, 403) else "api_error"
@@ -3972,7 +4029,7 @@ def check_google_connection(config: dict[str, Any]) -> dict[str, Any]:
             "tasklist_count": 0,
             "message": tr("Google sign-in information is missing or invalid.", "缺少 Google 登录信息，或信息无效。"),
         }
-    except (OSError, json.JSONDecodeError, ValueError):
+    except (OSError, http.client.HTTPException, json.JSONDecodeError, ValueError):
         return {
             "state": "unavailable",
             "source": "network",
@@ -5060,6 +5117,7 @@ def plan_google_task_outbound_mutations(
     allow_deletes: bool,
     allow_completions: bool | None = None,
     deleted_tasks_by_list: dict[str, list[dict[str, Any]]] | None = None,
+    kept_over_deletion: set[tuple[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     if allow_completions is None:
         allow_completions = allow_deletes
@@ -5110,10 +5168,10 @@ def plan_google_task_outbound_mutations(
                 record = None
             task_id = existing.get("id") if existing else record.get("task_id") if record else None
             if task_id and not existing and str(task_id) in deleted_ids_by_list.get(list_title, set()):
-                # The tracked Google task is a deletion tombstone, yet the
-                # reminder still syncs (its edit is newer than the deletion,
-                # or deletions are not propagated): recreate the task rather
-                # than writing to the tombstone, which stays deleted.
+                if tombstone_action(config, list_title, uid, kept_over_deletion or set()) != "recreate":
+                    continue
+                # The reminder wins over the Google deletion: recreate the
+                # task rather than writing to the tombstone, which stays deleted.
                 task_id = None
             existing_metadata = parse_tasks_sync_metadata(str(existing.get("notes") or "")) if existing else {}
             existing_digest = existing_metadata.get("source digest") if existing else record.get("digest") if record else None
@@ -5261,6 +5319,29 @@ def plan_google_task_outbound_mutations(
     return actions
 
 
+def tombstone_action(
+    config: dict[str, Any],
+    list_title: str,
+    uid: str,
+    kept_over_deletion: set[tuple[str, str]],
+) -> str:
+    """"recreate" or "hold" for a reminder whose tracked Google task was deleted.
+
+    Recreate only when the reminder's edit beat the deletion, or when the list
+    is configured never to sync deletions. While deletions are held for the
+    cycle (first sync, safe sync, a plan awaiting approval) the deletion stays
+    pending: undoing it here would silently cancel the person's decision.
+    """
+
+    if (list_title, uid) in kept_over_deletion:
+        return "recreate"
+    if config.get("_disable_delete_propagation") or list_title in (config.get("_first_sync_lists") or ()):
+        return "hold"
+    if not list_sync_policy(config, list_title)["delete_propagation"]:
+        return "recreate"
+    return "hold"
+
+
 def deleted_task_ids_by_list(deleted_tasks_by_list: dict[str, list[dict[str, Any]]]) -> dict[str, set[str]]:
     return {
         list_title: {str(task.get("id")) for task in tasks if task.get("id")}
@@ -5391,6 +5472,21 @@ def run_tasks_sync(config: dict[str, Any], dry_run: bool = False) -> dict[str, A
     account_binding = resolve_sync_account_binding(config, reminders)
     bind_or_validate_sync_state_accounts(state, account_binding)
     expect_google_binding(config, account_binding)
+    # A list with no entry in the sync map yet (a first sync, a rebuilt or lost
+    # map, a newly selected list) has no record of what existed before, so
+    # nothing in it can be read as deleted or completed this cycle.
+    mapped_lists = {
+        str(record.get("tasklist_title") or "")
+        for record in (state.get("tasks") or {}).values()
+        if isinstance(record, dict)
+    }
+    if config.get("tasks_mirror_lists") and not config.get("tasks_mirror_empty_lists"):
+        # Empty lists are not mirrored, but a mapped list that just lost its
+        # last reminder must stay in scope to sync that deletion.
+        apple_titles = {str(item.get("title") or "") for item in run_reminders_lists_export(config)}
+        for list_title in sorted(mapped_lists & apple_titles):
+            desired_by_list.setdefault(list_title, {})
+    config["_first_sync_lists"] = set(desired_by_list) - mapped_lists
     client = GoogleTasksClient(config)
     tasklists, missing_tasklists = inspect_tasklists_for_desired(client, desired_by_list, config)
     tasks_by_list: dict[str, list[dict[str, Any]]] = {}
@@ -5469,6 +5565,7 @@ def run_tasks_sync(config: dict[str, Any], dry_run: bool = False) -> dict[str, A
             allow_deletes=allow_deletes,
             allow_completions=allow_completions,
             deleted_tasks_by_list=deleted_tasks_by_list,
+            kept_over_deletion=bidirectional_plan["kept_over_deletion"],
         )
     )
     population = max(source_count, managed_google_task_population(tasklists, tasks_by_list, state))
@@ -5571,10 +5668,13 @@ def run_tasks_sync(config: dict[str, Any], dry_run: bool = False) -> dict[str, A
                 record = None
             task_id = existing.get("id") if existing else record.get("task_id") if record else None
             if task_id and not existing and str(task_id) in deleted_ids_by_list.get(list_title, set()):
-                # The tracked Google task is a deletion tombstone, yet the
-                # reminder still syncs (its edit is newer than the deletion,
-                # or deletions are not propagated): recreate the task rather
-                # than writing to the tombstone, which stays deleted.
+                if tombstone_action(config, list_title, uid, bidirectional_plan["kept_over_deletion"]) != "recreate":
+                    # The Google deletion is pending (held this cycle, over the
+                    # limits, or in conflict): touch neither side for now.
+                    blocked.add((list_title, uid))
+                    continue
+                # The reminder wins over the Google deletion: recreate the
+                # task rather than writing to the tombstone, which stays deleted.
                 task_id = None
             existing_metadata = parse_tasks_sync_metadata(str(existing.get("notes") or "")) if existing else {}
             existing_digest = existing_metadata.get("source digest") if existing else record.get("digest") if record else None
@@ -6138,6 +6238,10 @@ def send_macos_notification(
     if not config.get("macos_notifications"):
         return
     use_event_stream = event_stream_enabled()
+    if called_from_app() and not use_event_stream:
+        # A one-shot command run by the app: the app reports the outcome in
+        # its own window; never post an osascript ("Script Editor") notice.
+        return
     if not use_event_stream and (sys.platform != "darwin" or not shutil.which("osascript")):
         return
 
@@ -6999,10 +7103,9 @@ def restored_consecutive_failures(status: dict[str, Any]) -> int:
         return 0
 
 
-LEGACY_TMP_LOGS = (
-    Path("/tmp/icloud-reminders-google-sync.out.log"),
-    Path("/tmp/icloud-reminders-google-sync.err.log"),
-)
+def legacy_tmp_logs() -> tuple[Path, Path]:
+    base = Path(os.environ.get("LTB_LEGACY_TMP_DIR") or "/tmp")
+    return (base / "icloud-reminders-google-sync.out.log", base / "icloud-reminders-google-sync.err.log")
 
 
 def prepare_private_log(path: Path, max_bytes: int) -> None:
@@ -7037,20 +7140,22 @@ def open_private_log(path: Path, max_bytes: int) -> Any:
     return os.fdopen(descriptor, "a", buffering=1, encoding="utf-8", errors="replace")
 
 
-def retire_legacy_tmp_logs() -> list[str]:
-    """Delete world-readable logs that very old installs left in /tmp."""
+def retire_legacy_tmp_logs(backup_dir: Path) -> list[str]:
+    """Move world-readable logs that very old installs left in /tmp into the private backup."""
 
-    removed: list[str] = []
-    for path in LEGACY_TMP_LOGS:
+    moved: list[str] = []
+    for path in legacy_tmp_logs():
         for candidate in (path, path.with_name(path.name + ".1")):
             try:
                 info = candidate.lstat()
             except FileNotFoundError:
                 continue
             if stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid():
-                candidate.unlink()
-                removed.append(str(candidate))
-    return removed
+                destination = backup_dir / candidate.name
+                shutil.move(str(candidate), destination)
+                os.chmod(destination, 0o600)
+                moved.append(str(candidate))
+    return moved
 
 
 class LoopStopRequested(Exception):
@@ -7072,8 +7177,7 @@ def acquire_loop_lock(config: dict[str, Any]) -> Any:
     """Hold run-loop.lock for this process's lifetime; None if another loop has it."""
 
     path = loop_lock_path(config)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle = path.open("a", encoding="utf-8")
+    handle = open_private_append(path)
     try:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
@@ -7436,9 +7540,14 @@ def run_scheduler(args: argparse.Namespace, loop_log: LoopLog | None) -> None:
                 {**config, "trigger_min_interval_seconds": configured_trigger_gap}
             )
             if sync_paused(config):
+                # A bulk-change dialog answered while paused must be collected,
+                # or the wait would return at once and spin.
+                approvals.collect()
                 if not was_paused:
                     print(f"[{utc_now_text()}] sync paused", flush=True)
-                    write_sync_status(config, {"state": "paused", "paused_at": utc_now_text()})
+                    # The pause flag itself reports the pause; the last sync
+                    # state (for example auth_required) stays visible.
+                    write_sync_status(config, {"paused_at": utc_now_text()})
                     emit_event("paused")
                 was_paused = True
             else:
@@ -7557,10 +7666,10 @@ def classify_exception(exc: BaseException) -> tuple[str, str, dict[str, Any]]:
     if isinstance(exc, OAuthTokenError):
         if exc.invalid_grant:
             return "auth_required", message_auth_required(), {}
-        if exc.status == 0:
+        if exc.unreachable:
             return "network", message_network(), {}
         return "failed", str(exc), {}
-    if isinstance(exc, (urllib.error.URLError, TimeoutError, ConnectionError)):
+    if isinstance(exc, (urllib.error.URLError, TimeoutError, ConnectionError, http.client.HTTPException)):
         return "network", message_network(), {}
     if isinstance(exc, SystemExit):
         text = exc.code if isinstance(exc.code, str) else str(exc)
@@ -7578,12 +7687,43 @@ def write_json_document(payload: dict[str, Any], stream: Any = None) -> None:
     target.flush()
 
 
+@contextlib.contextmanager
+def deferred_termination() -> Any:
+    """Let a command that writes finish before honouring SIGTERM.
+
+    Stopping a sync, an approval, or a rebuild half-way would leave Apple,
+    Google, and the sync map out of step; the request is noted and the work
+    completes. SIGKILL cannot be deferred, so callers must not send it.
+    """
+
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    requested: list[int] = []
+
+    def note(signum: int, _frame: Any) -> None:
+        requested.append(signum)
+        eprint("Termination requested; finishing the current operation first.")
+
+    previous = signal.signal(signal.SIGTERM, note)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
 def run_cli_command(
     args: argparse.Namespace,
     handler: Callable[[], dict[str, Any]],
     human: Callable[[dict[str, Any]], None] | None = None,
+    *,
+    writes: bool = False,
 ) -> dict[str, Any] | None:
     """Run a command; in JSON mode, emit one document and map failures to exit codes."""
+
+    if writes:
+        with deferred_termination():
+            return run_cli_command(args, handler, human)
 
     if not json_mode(args):
         try:
@@ -7761,25 +7901,25 @@ def cmd_lists(args: argparse.Namespace) -> None:
 
 def _expect_bool(key: str, value: Any) -> bool:
     if not isinstance(value, bool):
-        raise CommandError("config_invalid", f"{key} must be true or false")
+        raise CommandError("config_invalid", tr(f"{key} must be true or false", f"{key} 必须是 true 或 false"))
     return value
 
 
 def _expect_int(key: str, value: Any, minimum: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-        raise CommandError("config_invalid", f"{key} must be an integer >= {minimum}")
+        raise CommandError("config_invalid", tr(f"{key} must be an integer >= {minimum}", f"{key} 必须是不小于 {minimum} 的整数"))
     return value
 
 
 def _expect_choice(key: str, value: Any, choices: set[str]) -> str:
     if not isinstance(value, str) or value not in choices:
-        raise CommandError("config_invalid", f"{key} must be one of: {', '.join(sorted(choices))}")
+        raise CommandError("config_invalid", tr(f"{key} must be one of: {', '.join(sorted(choices))}", f"{key} 必须是以下之一：{'、'.join(sorted(choices))}"))
     return value
 
 
 def _expect_lists(key: str, value: Any) -> list[str]:
     if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
-        raise CommandError("config_invalid", f"{key} must be a list of Reminders list titles")
+        raise CommandError("config_invalid", tr(f"{key} must be a list of Reminders list titles", f"{key} 必须是提醒事项列表名称组成的数组"))
     unique: list[str] = []
     for item in value:
         if item not in unique:
@@ -7789,7 +7929,7 @@ def _expect_lists(key: str, value: Any) -> list[str]:
 
 def _expect_ratio(key: str, value: Any) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= float(value) <= 1:
-        raise CommandError("config_invalid", f"{key} must be a number between 0 and 1")
+        raise CommandError("config_invalid", tr(f"{key} must be a number between 0 and 1", f"{key} 必须是 0 到 1 之间的数"))
     return float(value)
 
 
@@ -7803,7 +7943,7 @@ def _expect_list_policies(key: str, value: Any) -> dict[str, Any]:
 
 def _expect_proxy(key: str, value: Any) -> str:
     if not isinstance(value, str):
-        raise CommandError("config_invalid", f"{key} must be a string")
+        raise CommandError("config_invalid", tr(f"{key} must be a string", f"{key} 必须是字符串"))
     try:
         return normalize_proxy_setting(value)
     except SystemExit as exc:
@@ -7812,7 +7952,7 @@ def _expect_proxy(key: str, value: Any) -> str:
 
 def _expect_optional_text(key: str, value: Any) -> str | None:
     if value is not None and not isinstance(value, str):
-        raise CommandError("config_invalid", f"{key} must be a string or null")
+        raise CommandError("config_invalid", tr(f"{key} must be a string or null", f"{key} 必须是字符串或 null"))
     return value
 
 
@@ -7874,6 +8014,10 @@ def save_config_document(path: Path, document: dict[str, Any], args: argparse.Na
             candidate.unlink()
         text = exc.code if isinstance(exc.code, str) else str(exc)
         raise CommandError("config_invalid", text) from exc
+    except (TypeError, ValueError) as exc:
+        with contextlib.suppress(FileNotFoundError):
+            candidate.unlink()
+        raise CommandError("config_invalid", tr(f"Invalid setting: {exc}", f"设置无效：{exc}")) from exc
     except BaseException:
         with contextlib.suppress(FileNotFoundError):
             candidate.unlink()
@@ -7897,7 +8041,12 @@ def cmd_config(args: argparse.Namespace) -> None:
             config = load_cli_config(args)
         else:
             if path.exists():
-                backup_management_files(load_cli_config(args), "config-init")
+                # Raw copy: --force is exactly for a config that no longer parses.
+                backup_dir = path.parent / "backups" / f"{dt.datetime.now().astimezone().strftime('%Y%m%d-%H%M%S')}-config-init-{os.getpid()}"
+                ensure_private_dir(backup_dir.parent)
+                ensure_private_dir(backup_dir)
+                shutil.copy2(path, backup_dir / "config.json")
+                os.chmod(backup_dir / "config.json", 0o600)
             config = save_config_document(path, product_default_config(), args)
             created = True
         return {"config_path": str(path), "created": created, "config": config_view(config)}
@@ -7907,12 +8056,12 @@ def cmd_config(args: argparse.Namespace) -> None:
         try:
             changes = json.loads(raw or "{}")
         except json.JSONDecodeError as exc:
-            raise CommandError("config_invalid", f"stdin is not valid JSON: {exc}") from exc
+            raise CommandError("config_invalid", tr(f"stdin is not valid JSON: {exc}", f"标准输入不是有效的 JSON：{exc}")) from exc
         if not isinstance(changes, dict):
-            raise CommandError("config_invalid", "stdin must contain a JSON object")
+            raise CommandError("config_invalid", tr("stdin must contain a JSON object", "标准输入必须是一个 JSON 对象"))
         unknown = sorted(set(changes) - set(CONFIG_MERGE_VALIDATORS))
         if unknown:
-            raise CommandError("config_invalid", f"Unsupported setting(s): {', '.join(unknown)}")
+            raise CommandError("config_invalid", tr(f"Unsupported setting(s): {', '.join(unknown)}", f"不支持的设置项：{'、'.join(unknown)}"))
         document = read_config_document(path) or product_default_config()
         for key, value in changes.items():
             validated = CONFIG_MERGE_VALIDATORS[key](key, value)
@@ -7932,7 +8081,7 @@ def cmd_config(args: argparse.Namespace) -> None:
     def human(result: dict[str, Any]) -> None:
         print(json.dumps(result.get("config"), indent=2, ensure_ascii=False, sort_keys=True))
 
-    run_cli_command(args, handlers[action], human)
+    run_cli_command(args, handlers[action], human, writes=action in {"init", "merge"})
 
 
 def cmd_init_config(args: argparse.Namespace) -> None:
@@ -7985,7 +8134,7 @@ def cmd_client(args: argparse.Namespace) -> None:
     def human(result: dict[str, Any]) -> None:
         print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True))
 
-    run_cli_command(args, import_client if action == "import" else status, human)
+    run_cli_command(args, import_client if action == "import" else status, human, writes=action == "import")
 
 
 # auth, account, signout ----------------------------------------------------
@@ -8087,7 +8236,7 @@ def cmd_signout(args: argparse.Namespace) -> None:
         write_sync_status(config, {"state": "auth_required", "last_error": "", "last_signed_out_at": utc_now_text()})
         return {"revoked": revoked, "token_removed": removed, "adc_disabled": adc_disabled}
 
-    run_cli_command(args, handler, lambda result: print(tr("Signed out of Google.", "已退出 Google 登录。")))
+    run_cli_command(args, handler, lambda result: print(tr("Signed out of Google.", "已退出 Google 登录。")), writes=True)
 
 
 # sync ----------------------------------------------------------------------
@@ -8107,7 +8256,7 @@ def cmd_sync(args: argparse.Namespace) -> None:
             "plan": config.get("_last_mutation_plan") or {},
         }
 
-    run_cli_command(args, handler)
+    run_cli_command(args, handler, writes=args.dry_run is not True)
 
 
 def sync_once(config: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
@@ -8283,7 +8432,7 @@ def cmd_approvals(args: argparse.Namespace) -> None:
         "apply": lambda: locked(apply),
         "hold": hold,
     }
-    run_cli_command(args, handlers[action], human)
+    run_cli_command(args, handlers[action], human, writes=action != "show")
 
 
 # pause, resume, sync-now ---------------------------------------------------
@@ -8363,7 +8512,17 @@ def cmd_rebuild(args: argparse.Namespace) -> None:
                 # exists, so no regular cycle ever runs on an empty map.
                 backup_dir = backup_management_files(config, "rebuild")
                 archived = archive_state_for_rebuild(config, backup_dir)
-                result = run_management_safe_sync(config, dry_run=False, lock_held=True)
+                try:
+                    result = run_management_safe_sync(config, dry_run=False, lock_held=True)
+                except BaseException:
+                    # No new map was written: put the old one back, so the
+                    # account check keeps stopping regular syncs.
+                    state_path = expand_path(config["state_path"])
+                    archived_state = backup_dir / "state.active-before-rebuild.json"
+                    if archived and not state_path.exists() and archived_state.exists():
+                        shutil.copy2(archived_state, state_path)
+                        os.chmod(state_path, 0o600)
+                    raise
         finally:
             if held:
                 start_management_agent(snapshot)
@@ -8375,7 +8534,7 @@ def cmd_rebuild(args: argparse.Namespace) -> None:
         else:
             print(tr("Rebuilt the sync map. Nothing was deleted.", "已重建同步对应关系，没有删除任何内容。"))
 
-    run_cli_command(args, handler, human)
+    run_cli_command(args, handler, human, writes=True)
 
 
 # doctor --------------------------------------------------------------------
@@ -8704,8 +8863,11 @@ def cmd_migrate(args: argparse.Namespace) -> None:
                 shutil.copy2(destination, backup_dir / f"replaced-{destination.name}")
             shutil.copy2(origin, destination)
             os.chmod(destination, 0o600)
+        if target_path.exists():
+            shutil.copy2(target_path, backup_dir / "replaced-config.json")
+            os.chmod(backup_dir / "replaced-config.json", 0o600)
         save_config_document(target_path, document, args)
-        result["legacy_tmp_logs_removed"] = retire_legacy_tmp_logs()
+        result["legacy_tmp_logs_moved"] = retire_legacy_tmp_logs(backup_dir)
         return result
 
     def human(result: dict[str, Any]) -> None:
@@ -8715,7 +8877,7 @@ def cmd_migrate(args: argparse.Namespace) -> None:
         if result.get("legacy_agent_stopped"):
             print(tr("Stopped the old background job.", "已停止旧的后台任务。"))
 
-    run_cli_command(args, handler, human)
+    run_cli_command(args, handler, human, writes=True)
 
 
 # login item (LaunchAgent) --------------------------------------------------
@@ -8778,7 +8940,6 @@ def install_launch_agent(app_path: Path, *, load: bool = True) -> dict[str, Any]
         )
         if completed.returncode != 0:
             eprint(f"launchctl bootstrap failed: {completed.stderr.strip()}")
-    retire_legacy_tmp_logs()
     return agent_status_payload()
 
 
@@ -8840,9 +9001,78 @@ def safe_private_directory(path: Path, expected_name: str) -> bool:
     return resolved.name == expected_name and resolved != home and home in resolved.parents
 
 
+PRIVATE_DATA_NAMES = (
+    "config.json",
+    "credentials.json",
+    "token.json",
+    "state.json",
+    "state.lock",
+    "status.json",
+    "paused",
+    "sync-now",
+    "run-loop.lock",
+)
+
+
+def delete_private_data(config: dict[str, Any]) -> bool:
+    """Delete the product's own files, never a directory tree it did not create.
+
+    The config directory may be any folder passed with --config (even a source
+    checkout called local-tasks-bridge), so only known files are removed and
+    the directory itself only when it is empty afterwards.
+    """
+
+    data_dir = control_dir(config)
+    if not data_dir.is_dir():
+        return False
+    candidates = {data_dir / name for name in PRIVATE_DATA_NAMES}
+    for key in CONFIG_PATH_KEYS:
+        path = expand_path(config[key])
+        if path.parent == data_dir.resolve():
+            candidates.update({path, path.with_suffix(".lock")})
+    candidates.update(data_dir.glob(".*.tmp"))
+    removed = False
+    for path in candidates:
+        if path.is_file() or path.is_symlink():
+            path.unlink()
+            removed = True
+    backups = data_dir / "backups"
+    if backups.is_dir() and not backups.is_symlink():
+        shutil.rmtree(backups)
+        removed = True
+    with contextlib.suppress(OSError):
+        data_dir.rmdir()
+    return removed
+
+
+def delete_private_logs() -> bool:
+    logs = log_dir()
+    if not logs.is_dir() or logs.is_symlink():
+        return False
+    removed = False
+    for pattern in ("engine.log*", "app.log*"):
+        for path in logs.glob(pattern):
+            if path.is_file() or path.is_symlink():
+                path.unlink()
+                removed = True
+    with contextlib.suppress(OSError):
+        logs.rmdir()
+    return removed
+
+
 def cmd_uninstall(args: argparse.Namespace) -> None:
     def handler() -> dict[str, Any]:
-        config = load_cli_config(args)
+        try:
+            config = load_cli_config(args)
+        except CommandError as exc:
+            if exc.code != "config_invalid":
+                raise
+            # Uninstalling must never dead-end on a broken config: fall back
+            # to the default files next to it.
+            config = default_config()
+            config["_config_path"] = str(expand_path(args.config))
+            for key in CONFIG_PATH_KEYS:
+                config[key] = str(expand_path(args.config).parent / CONFIG_PATH_DEFAULT_NAMES[key])
         if getattr(args, "yes", False) is not True:
             prompt = tr(
                 "Remove the login item" + (", revoke Google access" if args.revoke else "")
@@ -8858,17 +9088,12 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
         if getattr(args, "revoke", False) is True and token_path.is_file():
             with contextlib.suppress(OSError, json.JSONDecodeError):
                 result["revoked"] = revoke_google_token(read_json(token_path))
+            result["revoke_failed"] = not result["revoked"]
         result["data_deleted"] = False
         result["logs_deleted"] = False
         if getattr(args, "delete_data", False) is True:
-            data_dir = control_dir(config)
-            if data_dir.is_dir() and safe_private_directory(data_dir, APP_NAME):
-                shutil.rmtree(data_dir)
-                result["data_deleted"] = True
-            logs = log_dir()
-            if logs.is_dir() and safe_private_directory(logs, "LocalTasksBridge"):
-                shutil.rmtree(logs)
-                result["logs_deleted"] = True
+            result["data_deleted"] = delete_private_data(config)
+            result["logs_deleted"] = delete_private_logs()
         return result
 
     def human(result: dict[str, Any]) -> None:
@@ -8877,8 +9102,13 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
             print(tr("Google access was revoked.", "已撤销 Google 授权。"))
         if result["data_deleted"]:
             print(tr("Local settings and sync state were deleted.", "已删除本地设置和同步状态。"))
+        if result.get("revoke_failed"):
+            print(tr(
+                "Google access could not be revoked (network?). Revoke it at https://myaccount.google.com/permissions",
+                "未能撤销 Google 授权（可能是网络问题）。请在 https://myaccount.google.com/permissions 手动撤销。",
+            ))
 
-    run_cli_command(args, handler, human)
+    run_cli_command(args, handler, human, writes=True)
 
 
 def add_json_option(parser: argparse.ArgumentParser) -> None:

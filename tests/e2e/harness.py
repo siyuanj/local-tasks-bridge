@@ -416,6 +416,8 @@ class Environment:
             "LTB_NO_LAUNCHCTL": "1",
             "LTB_LAUNCH_AGENTS_DIR": str(self.launch_agents_dir),
             "LTB_LOG_DIR": str(self.log_dir),
+            # Legacy /tmp logs that `migrate` retires: never the developer's real ones.
+            "LTB_LEGACY_TMP_DIR": str(self.home / "legacy-tmp"),
             fake_reminders.STORE_ENV: str(self.reminders_store_path),
             "PYTHONDONTWRITEBYTECODE": "1",
             "PYTHONUNBUFFERED": "1",

@@ -517,7 +517,10 @@ class SchedulerControlTests(unittest.TestCase):
                     contextlib.redirect_stdout(io.StringIO()):
                 sync.cmd_run_loop(mock.Mock())
             self.assertEqual(events, ["loop_started", "paused"])
-            self.assertEqual(sync.read_sync_status(config)["state"], "paused")
+            status = sync.read_sync_status(config)
+            self.assertTrue(status["paused_at"])
+            # The last sync state stays visible behind the pause flag.
+            self.assertNotEqual(status.get("state"), "paused")
 
     def test_run_loop_writes_to_a_private_log_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_name:
@@ -785,6 +788,199 @@ class ReviewFindingRegressionTests(unittest.TestCase):
             self.assertEqual(len(archived), 1)
 
 
+class FirstSyncSafetyTests(unittest.TestCase):
+    def test_a_list_without_a_sync_map_entry_never_deletes(self) -> None:
+        """An empty or lost map (first sync, rebuild, new list) proves nothing about deletions."""
+        with tempfile.TemporaryDirectory() as directory:
+            config = sync.default_config()
+            config.update(
+                state_path=str(Path(directory) / "state.json"), delete_stale=True, tasks_complete_stale=True,
+                max_destructive_changes=100, max_destructive_ratio=1.0, verify_title_due_after_sync=False,
+            )
+            orphan = {
+                "id": "orphan", "title": "Synced long ago", "status": "needsAction",
+                "notes": "Synced from Apple Reminders.\nSource UID: forgotten\nSource Digest: old",
+            }
+            client = mock.Mock()
+            with contextlib.ExitStack() as stack:
+                def patch(name: str, **kwargs: object) -> mock.Mock:
+                    return stack.enter_context(mock.patch.object(sync, name, **kwargs))
+
+                patch("build_desired_tasks", return_value=([], {"Personal": {}}, 0))
+                patch("build_completed_tasks", return_value=([], {}, 0))
+                patch("resolve_sync_account_binding", return_value={"version": 1, "apple": "a", "google": "g"})
+                patch("GoogleTasksClient", return_value=client)
+                patch("inspect_tasklists_for_desired", return_value=({"Personal": "list-1"}, []))
+                patch("list_task_snapshot", return_value=([orphan], []))
+                stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+                config["allow_empty_source_delete"] = True
+                sync.run_tasks_sync(config)
+            client.delete_task.assert_not_called()
+            client.complete_task.assert_not_called()
+
+
+class SecondReviewRegressionTests(unittest.TestCase):
+    def tombstone_case(self, *, held: bool) -> mock.Mock:
+        with tempfile.TemporaryDirectory() as directory:
+            config = sync.default_config()
+            config.update(
+                state_path=str(Path(directory) / "state.json"), bidirectional=True, delete_stale=True,
+                max_destructive_changes=100, max_destructive_ratio=1.0, verify_title_due_after_sync=False,
+            )
+            if held:
+                config = sync.held_destructive_config(config)
+            reminder = {
+                "stable_id": "r1", "title": "Deleted in Google", "notes": "", "list_title": "Trial",
+                "list_id": "apple-list", "account_id": "a", "due_date": "2026-10-01", "due_at": None,
+                "all_day": True, "is_completed": False, "modified_at": "2026-10-01T00:00:00Z", "completed_at": None,
+            }
+            uid, body, digest = sync.build_task(reminder, config)
+            state: dict[str, object] = {"version": 1, "events": {}, "tasks": {}}
+            binding = {"version": 1, "apple": "a", "google": "g"}
+            sync.bind_or_validate_sync_state_accounts(state, binding)
+            tombstone = {**body, "id": "t1", "status": "needsAction", "deleted": True, "updated": "2026-10-01T01:00:00Z"}
+            sync.save_task_state(state, "list-1", uid, {**tombstone, "deleted": False}, digest, "x", reminder, config, "Trial")
+            client = mock.Mock()
+            client.insert_task.return_value = {**body, "id": "t-new", "status": "needsAction"}
+            with contextlib.ExitStack() as stack:
+                def patch(name: str, **kwargs: object) -> mock.Mock:
+                    return stack.enter_context(mock.patch.object(sync, name, **kwargs))
+
+                patch("build_desired_tasks", return_value=([reminder], {"Trial": {uid: (body, digest, reminder)}}, 0))
+                patch("build_completed_tasks", return_value=([], {}, 0))
+                patch("load_state", return_value=state)
+                patch("resolve_sync_account_binding", return_value=binding)
+                patch("GoogleTasksClient", return_value=client)
+                patch("inspect_tasklists_for_desired", return_value=({"Trial": "list-1"}, []))
+                patch("list_task_snapshot", return_value=([], [tombstone]))
+                patch("run_reminders_apply", return_value=[])
+                stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+                sync.run_tasks_sync(config)
+            return client
+
+    def test_held_deletions_are_never_undone_by_recreating_tasks(self) -> None:
+        client = self.tombstone_case(held=True)
+        client.insert_task.assert_not_called()
+        client.patch_task.assert_not_called()
+
+    def test_uninstall_never_deletes_a_checkout_used_as_config_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_name:
+            home = Path(tmp_name)
+            checkout = home / "src" / "local-tasks-bridge"
+            (checkout / ".git").mkdir(parents=True)
+            (checkout / "README.md").write_text("keep me", encoding="utf-8")
+            (checkout / "config.json").write_text("{}", encoding="utf-8")
+            (checkout / "status.json").write_text("{}", encoding="utf-8")
+            result = run_engine(home, "--config", str(checkout / "config.json"), "uninstall", "--delete-data", "--yes", "--json")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((checkout / "README.md").exists())
+            self.assertTrue((checkout / ".git").is_dir())
+            self.assertFalse((checkout / "config.json").exists())
+            self.assertFalse((checkout / "status.json").exists())
+
+    def test_uninstall_still_works_with_a_broken_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_name:
+            home = Path(tmp_name)
+            config_dir = home / ".config" / "local-tasks-bridge"
+            config_dir.mkdir(parents=True)
+            (config_dir / "config.json").write_text("{ broken", encoding="utf-8")
+            result = run_engine(home, "uninstall", "--delete-data", "--yes", "--json")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertFalse(config_dir.exists())
+
+    def test_offline_token_refresh_is_reported_as_a_network_problem(self) -> None:
+        offline = sync.OAuthTokenError(0, "OAuth request failed: offline")
+        config = sync.default_config()
+        with mock.patch.object(sync, "refresh_token", side_effect=offline):
+            with self.assertRaises(sync.OAuthTokenError):
+                sync.refresh_token_with_fallback(config, {"refresh_token": "r"})
+        self.assertEqual(sync.classify_exception(offline)[0], "network")
+        with mock.patch.object(sync, "load_token", return_value={"refresh_token": "r"}), \
+                mock.patch.object(sync, "refresh_token", side_effect=offline):
+            self.assertEqual(sync.check_google_connection(config)["state"], "unavailable")
+
+    def test_private_files_are_born_private(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_name:
+            target = Path(tmp_name) / "fresh" / "token.json"
+            with mock.patch.object(sync.os, "umask", return_value=0o022):
+                sync.write_json_atomic(target, {"a": 1})
+            self.assertEqual(stat.S_IMODE(target.parent.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+            self.assertEqual(list(target.parent.glob(".*.tmp")), [])
+
+    def test_pairing_an_existing_google_task_keeps_its_notes(self) -> None:
+        config = sync.default_config()
+        config.update(bidirectional=True, tasks_import_unsynced=True)
+        reminder = {
+            "stable_id": "r1", "id": "r1", "title": "Buy milk", "notes": "", "list_title": "Home",
+            "list_id": "apple-home", "account_id": "a", "due_date": "2026-10-05", "due_at": None,
+            "all_day": True, "is_completed": False, "modified_at": "2026-10-01T00:00:00Z", "completed_at": None,
+        }
+        uid, body, digest = sync.build_task(reminder, config)
+        google = {"id": "g1", "title": "Buy milk", "notes": "2% organic", "status": "needsAction",
+                  "due": "2026-10-05T00:00:00.000Z", "updated": "2026-10-01T00:00:00Z"}
+        plan = sync.plan_google_task_changes_to_reminders(
+            config, {"Home": {uid: (body, digest, reminder)}}, {"Home": "list-home"},
+            {"Home": {}}, {"Home": [google]}, {"Home": []}, {"version": 1, "events": {}, "tasks": {}},
+            allow_deletes=False,
+        )
+        patched_body = plan["google_patches"][0][3]
+        self.assertIn("2% organic", patched_body["notes"])
+        self.assertIn("Synced from Apple Reminders.", patched_body["notes"])
+        self.assertEqual([op.get("notes") for op in plan["operations"]], ["2% organic"])
+
+    def test_a_failed_rebuild_puts_the_old_map_back(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_name:
+            base = Path(tmp_name)
+            config = isolated_config(base)
+            Path(config["_config_path"]).write_text("{}", encoding="utf-8")
+            Path(config["state_path"]).write_text('{"tasks": {"old": {"task_id": "t"}}}', encoding="utf-8")
+            args = argparse_namespace(json=True, dry_run=False, yes=True, config=config["_config_path"])
+            with mock.patch.object(sync, "load_cli_config", return_value=config), \
+                    mock.patch.object(sync, "run_management_safe_sync", side_effect=urllib.error.URLError("offline")), \
+                    contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as caught:
+                    sync.cmd_rebuild(args)
+            self.assertEqual(caught.exception.code, 9)
+            self.assertEqual(json.loads(Path(config["state_path"]).read_text())["tasks"], {"old": {"task_id": "t"}})
+            self.assertFalse(sync.sync_paused(config))
+
+    def test_config_reset_works_on_an_unreadable_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_name:
+            home = Path(tmp_name)
+            config_dir = home / ".config" / "local-tasks-bridge"
+            config_dir.mkdir(parents=True)
+            (config_dir / "config.json").write_text("{ truncated", encoding="utf-8")
+            self.assertEqual(run_engine(home, "config", "init", "--json").returncode, 7)
+            reset = run_engine(home, "config", "init", "--force", "--json")
+            self.assertEqual(reset.returncode, 0, reset.stdout + reset.stderr)
+            backups = list((config_dir / "backups").glob("*/config.json"))
+            self.assertEqual([backup.read_text(encoding="utf-8") for backup in backups], ["{ truncated"])
+            bad = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
+            bad["lookahead_days"] = "abc"
+            (config_dir / "config.json").write_text(json.dumps(bad), encoding="utf-8")
+            merged = run_engine(home, "config", "merge", "--json", stdin="{}")
+            self.assertEqual(merged.returncode, 7, merged.stdout)
+
+    def test_write_commands_finish_before_honouring_sigterm(self) -> None:
+        import signal as signals
+
+        reached: list[str] = []
+        with sync.deferred_termination():
+            os.kill(os.getpid(), signals.SIGTERM)
+            time.sleep(0.05)
+            reached.append("finished")
+        self.assertEqual(reached, ["finished"])
+        self.assertIs(signals.getsignal(signals.SIGTERM), signals.SIG_DFL)
+
+    def test_one_shot_commands_from_the_app_post_no_osascript_notice(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_name:
+            config = isolated_config(Path(tmp_name), macos_notifications=True)
+            with mock.patch.dict(os.environ, {"LTB_CALLER": "app", "LTB_EVENT_STREAM": ""}), \
+                    mock.patch.object(sync.subprocess, "run", side_effect=AssertionError("no osascript")):
+                sync.REAL_SEND_NOTIFICATION(config, "t", "m", "last_success_notification_at", 0)
+
+
 class QuotaFriendlySchedulingTests(unittest.TestCase):
     def orchestrate(self, existing_matches: bool) -> mock.Mock:
         with tempfile.TemporaryDirectory() as directory:
@@ -893,18 +1089,25 @@ class PrivateLogTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 sync.prepare_private_log(linked_dir / "engine.log", 32)
 
-    def test_only_own_regular_legacy_tmp_logs_are_removed(self) -> None:
+    def test_only_own_regular_legacy_tmp_logs_are_moved_privately(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_name:
             base = Path(tmp_name)
-            old = base / "old.out.log"
+            legacy = base / "tmp"
+            legacy.mkdir()
+            backup = base / "backup"
+            backup.mkdir()
+            old = legacy / "icloud-reminders-google-sync.out.log"
             old.write_text("CANARY", encoding="utf-8")
-            (base / "old.out.log.1").write_text("CANARY", encoding="utf-8")
-            link = base / "old.err.log"
+            old.chmod(0o644)
+            (legacy / "icloud-reminders-google-sync.out.log.1").write_text("CANARY", encoding="utf-8")
+            link = legacy / "icloud-reminders-google-sync.err.log"
             link.symlink_to(base / "elsewhere")
-            with mock.patch.object(sync, "LEGACY_TMP_LOGS", (old, link)):
-                removed = sync.retire_legacy_tmp_logs()
-            self.assertEqual(sorted(Path(item).name for item in removed), ["old.out.log", "old.out.log.1"])
+            with mock.patch.dict(os.environ, {"LTB_LEGACY_TMP_DIR": str(legacy)}):
+                moved = sync.retire_legacy_tmp_logs(backup)
+            self.assertEqual(sorted(Path(item).name for item in moved),
+                             ["icloud-reminders-google-sync.out.log", "icloud-reminders-google-sync.out.log.1"])
             self.assertTrue(link.is_symlink())
+            self.assertEqual(stat.S_IMODE((backup / "icloud-reminders-google-sync.out.log").stat().st_mode), 0o600)
 
 
 class EventStreamTests(unittest.TestCase):

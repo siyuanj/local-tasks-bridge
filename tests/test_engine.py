@@ -1150,6 +1150,34 @@ class GoogleTasksDueTests(unittest.TestCase):
         write_status.assert_not_called()
 
 
+def write_mapped_state(path: str, records: dict[tuple[str, str], tuple[str, str]]) -> None:
+    """A sync map that already tracks the given lists.
+
+    records: (tasklist_id, uid) -> (list title, Google task ID). A list with
+    no entry in the map is a first sync, where nothing is propagated as a
+    deletion; tests of deletion behaviour start from a mapped list.
+    """
+
+    state = {
+        "version": 1,
+        "events": {},
+        "account_binding": AccountBindingIsolationTests.binding(
+            "TENANT_A_ONLY_APPLE_TEST_ACCOUNT",
+            "TENANT_A_ONLY_GOOGLE_TEST_ACCOUNT",
+        ),
+        "tasks": {
+            sync.target_state_key(tasklist_id, uid): {
+                "tasklist_id": tasklist_id,
+                "tasklist_title": list_title,
+                "task_id": task_id,
+                "digest": "previous-digest",
+            }
+            for (tasklist_id, uid), (list_title, task_id) in records.items()
+        },
+    }
+    Path(path).write_text(json.dumps(state), encoding="utf-8")
+
+
 class ListPolicyTests(unittest.TestCase):
     def setUp(self) -> None:
         self.account_binding_patch = mock.patch.object(
@@ -1968,6 +1996,13 @@ class ListPolicyTests(unittest.TestCase):
                 def delete_task(self, tasklist_id: str, _task_id: str) -> None:
                     type(self).deleted_tasklists.append(tasklist_id)
 
+            write_mapped_state(
+                config["state_path"],
+                {
+                    ("protected-list", "uid-Protected"): ("Protected", "task-Protected"),
+                    ("disposable-list", "uid-Disposable"): ("Disposable", "task-Disposable"),
+                },
+            )
             with mock.patch.object(sync, "GoogleTasksClient", FakeClient), mock.patch.object(
                 sync,
                 "build_desired_tasks",
@@ -2182,6 +2217,7 @@ class MutationPlanTests(unittest.TestCase):
                 "is_completed": False,
             }
             uid, body, digest = sync.build_task(reminder, config)
+            write_mapped_state(config["state_path"], {("tasklist-1", uid): ("Personal", "task-0")})
             tasks = [{**body, "id": "task-0"}]
             for index in range(1, 10):
                 tasks.append(

@@ -28,6 +28,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import threading
 import time
 from typing import Any, Callable
 import urllib.error
@@ -677,6 +678,8 @@ def enforce_mutation_plan(
         f"population={plan['population']}, destructive_ratio={ratio_percent:.2f}%"
     )
     print(f"Mutation plan fingerprint: {plan['fingerprint']}")
+    # Counts and hashes only, for `sync --json`; never titles.
+    config["_last_mutation_plan"] = sanitized_mutation_plan(plan, reasons)
     if config.get("_mutation_plan_preview"):
         # Every write in both sync modes happens after this point, so a
         # preview can return the complete plan without touching anything.
@@ -3529,31 +3532,6 @@ def remove_task_state_record(state: dict[str, Any], tasklist_id: str, uid: str) 
     state.setdefault("tasks", {}).pop(target_state_key(tasklist_id, uid), None)
 
 
-def cmd_init_config(args: argparse.Namespace) -> None:
-    path = expand_path(args.config)
-    if path.exists() and not args.force:
-        raise SystemExit(f"Config already exists: {path}\nUse --force to overwrite it.")
-    write_json_atomic(path, default_config())
-    print(f"Wrote config template: {path}")
-
-
-def cmd_auth(args: argparse.Namespace) -> None:
-    config = load_config(args)
-    try:
-        run_auth_flow(config)
-    except OAuthCallbackTimeout as exc:
-        raise SystemExit(str(exc)) from exc
-    write_sync_status(
-        config,
-        {
-            "state": "auth_refreshed",
-            "last_manual_auth_completed_at": utc_now_text(),
-            **auto_reauth_failure_epoch_reset_updates(),
-            "last_error": "",
-        },
-    )
-
-
 def cmd_gcloud_login(args: argparse.Namespace) -> None:
     config = load_config(args)
     if not shutil.which("gcloud"):
@@ -3689,7 +3667,11 @@ def running_from_installed_engine() -> bool:
 
 
 def control_dir(config: dict[str, Any]) -> Path:
-    return expand_path(config.get("_config_path") or default_config_dir() / "config.json").parent
+    """Where the pause flag, sync-now request, and loop lock live: next to the config."""
+
+    if config.get("_config_path"):
+        return expand_path(config["_config_path"]).parent
+    return expand_path(config.get("state_path") or default_config_dir() / "state.json").parent
 
 
 def pause_flag_path(config: dict[str, Any]) -> Path:
@@ -3953,89 +3935,6 @@ def fetch_google_account_identity(access_token: str) -> dict[str, str]:
         "account_email": email,
         "account_fingerprint": sha256_text(f"google-openid-sub\n{subject}", 12) if subject else "",
     }
-
-
-def cmd_doctor(args: argparse.Namespace) -> None:
-    try:
-        config = load_config(args)
-    except (OSError, json.JSONDecodeError, SystemExit, TypeError, ValueError):
-        print("Local prerequisites:")
-        print("  Configuration: invalid")
-        print("Online Google checks: skipped (local read-only mode)")
-        print("Next step: Repair the private config or reinstall a reviewed main release, then rerun doctor.")
-        return
-
-    config_exists = expand_path(config["_config_path"]).exists()
-    adc_path = expand_path(config["adc_credentials_path"])
-    local_token_path = expand_path(config["token_path"])
-    runtime_current = Path.home() / ".local/share" / APP_NAME / "current"
-    runtime_ready = runtime_current.is_symlink() and (runtime_current / Path(__file__).name).is_file()
-    launch_agent_path = Path.home() / "Library/LaunchAgents" / f"{LAUNCH_AGENT_LABEL}.plist"
-    agent_loaded = launch_agent_loaded()
-    helpers_ready = expand_path(config["reminders_exporter_path"]).exists() and expand_path(
-        config["reminders_apply_path"]
-    ).exists()
-    auth_material_ready = adc_path.exists() or local_token_path.exists()
-    checks = [
-        ("Configuration", config_exists),
-        ("Swift", shutil.which("swift") is not None),
-        ("Reminders exporter", expand_path(config["reminders_exporter_path"]).exists()),
-        ("Reminders apply helper", expand_path(config["reminders_apply_path"]).exists()),
-        ("Google OAuth client JSON", expand_path(config["credentials_path"]).exists()),
-        ("gcloud ADC credentials", adc_path.exists()),
-        ("Local OAuth token", local_token_path.exists()),
-        ("Stable runtime release", runtime_ready),
-        ("LaunchAgent file", launch_agent_path.is_file()),
-    ]
-    print("Local prerequisites:")
-    for label, ok in checks:
-        print(f"  {label}: {'ok' if ok else 'missing'}")
-    if agent_loaded is None:
-        print("  LaunchAgent loaded: unavailable on this platform")
-    else:
-        print(f"  LaunchAgent loaded: {'ok' if agent_loaded else 'not loaded'}")
-
-    status_result, status = local_status_snapshot(config)
-    raw_state = str(status.get("state") or "unknown")
-    status_state = raw_state if raw_state in KNOWN_STATUS_STATES else "unknown"
-    print("Local sync status:")
-    print(f"  Status file: {status_result}")
-    if status_result == "available":
-        print(f"  State: {status_state}")
-        print(f"  Updated: {safe_status_time(status.get('updated_at'))}")
-        print(f"  Last successful sync: {safe_status_time(status.get('last_success_at'))}")
-        try:
-            failure_count = max(0, int(status.get("consecutive_failures") or 0))
-        except (TypeError, ValueError):
-            failure_count = 0
-        print(f"  Consecutive failures: {failure_count}")
-        pending = pending_destructive_counts(status)
-        if pending:
-            print(
-                "  Pending destructive changes: "
-                + ", ".join(f"{key}={count}" for key, count in pending.items())
-            )
-        if status.get("last_error"):
-            print("  Last sync error: recorded; details hidden to protect credentials and local paths")
-
-    if getattr(args, "online", False):
-        run_online_doctor_checks(config)
-    else:
-        print("Online Google checks: skipped (local read-only mode)")
-        print("  Use doctor --online only when a Google token refresh is acceptable.")
-
-    next_step = doctor_next_step(
-        config_exists=config_exists,
-        swift_ready=shutil.which("swift") is not None,
-        helpers_ready=helpers_ready,
-        runtime_ready=runtime_ready,
-        auth_material_ready=auth_material_ready,
-        launch_agent_installed=launch_agent_path.is_file(),
-        agent_loaded=agent_loaded,
-        status_result=status_result,
-        status_state=status_state,
-    )
-    print(f"Next step: {next_step}")
 
 
 class ManagementActionError(RuntimeError):
@@ -5363,7 +5262,7 @@ def managed_google_calendar_population(
     return max(len(existing_by_uid), state_managed)
 
 
-def run_tasks_sync(config: dict[str, Any], dry_run: bool = False) -> None:
+def run_tasks_sync(config: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
     reminders, desired_by_list, skipped_invalid = build_desired_tasks(config)
 
     print(f"Apple Reminders exported: {len(reminders)}")
@@ -5760,9 +5659,23 @@ def run_tasks_sync(config: dict[str, Any], dry_run: bool = False) -> None:
     )
     if dry_run:
         print("Dry run only; no Google Tasks or Apple Reminders changes were made.")
+    return {
+        "apple_exported": len(reminders),
+        "google_lists": len(tasklists),
+        "inserted": inserted,
+        "updated": updated,
+        "unchanged": unchanged,
+        "completed": completed,
+        "deleted": deleted,
+        "duplicate_deleted": duplicate_deleted,
+        "skipped_invalid": skipped_invalid,
+        "google_applied": google_applied,
+        "bidir_initialized": bidir_initialized,
+        "bidir_conflicts": bidir_conflicts,
+    }
 
 
-def run_calendar_sync(config: dict[str, Any], dry_run: bool = False) -> None:
+def run_calendar_sync(config: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
     calendar_id = str(config["calendar_id"])
     reminders, desired, skipped_invalid = build_desired_events(config)
 
@@ -5909,13 +5822,24 @@ def run_calendar_sync(config: dict[str, Any], dry_run: bool = False) -> None:
     )
     if dry_run:
         print("Dry run only; no Google Calendar or Apple Reminders changes were made.")
+    return {
+        "apple_exported": len(reminders),
+        "inserted": inserted,
+        "updated": updated,
+        "unchanged": unchanged,
+        "deleted": deleted,
+        "duplicate_deleted": duplicate_deleted,
+        "skipped_invalid": skipped_invalid,
+        "google_applied": google_applied,
+        "bidir_initialized": bidir_initialized,
+        "bidir_conflicts": bidir_conflicts,
+    }
 
 
-def run_sync(config: dict[str, Any], dry_run: bool = False) -> None:
+def run_sync(config: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
     if config["target_service"] == "calendar":
-        run_calendar_sync(config, dry_run=dry_run)
-        return
-    run_tasks_sync(config, dry_run=dry_run)
+        return run_calendar_sync(config, dry_run=dry_run)
+    return run_tasks_sync(config, dry_run=dry_run)
 
 
 def utc_now_text() -> str:
@@ -6461,8 +6385,25 @@ class MutationPlanApprovals:
             self.observed_fingerprint = destructive
             self.settled_cycles = 1 if destructive else 0
 
+    def refresh_from_status(self) -> None:
+        """Adopt a newer decision recorded by another process.
+
+        The menu bar app and `ltb approvals hold` record answers in
+        status.json; the scheduler honours them like a dialog answer.
+        """
+
+        stored = restored_mutation_approval(read_sync_status(self.config))
+        if not stored or not stored.get("decision"):
+            return
+        stored_at = parse_status_time(stored.get("decided_at"))
+        current_at = parse_status_time(self.memory.get("decided_at")) if self.memory else None
+        if stored_at and (current_at is None or stored_at > current_at):
+            self.memory = stored
+
     def collect(self, now: dt.datetime | None = None) -> None:
         """Record the answer of a question that has closed."""
+        if self.process is None:
+            self.refresh_from_status()
         if self.process is None or self.dialog_running():
             return
         process, fingerprint = self.process, self.process_fingerprint
@@ -6687,20 +6628,36 @@ def wait_for_next_cycle(
     approvals: MutationPlanApprovals,
     *,
     cycle_started_at: float | None = None,
+    wake: Callable[[], bool] | None = None,
 ) -> None:
-    """Keep a start-to-start cadence, waking early once an open question is answered."""
+    """Keep a start-to-start cadence, waking early when a question is answered.
+
+    With ``wake``, the wait also ends as soon as it returns True (a sync-now
+    request, or a pause/resume), checked about once a second.
+    """
     started_at = time.monotonic() if cycle_started_at is None else cycle_started_at
     deadline = started_at + interval
-    if not approvals.dialog_open():
-        remaining = deadline - time.monotonic()
-        if remaining > 0:
-            time.sleep(remaining)
+    if wake is None:
+        if not approvals.dialog_open():
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(remaining)
+            return
+        while approvals.dialog_running():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            time.sleep(min(MUTATION_APPROVAL_POLL_SECONDS, remaining))
         return
-    while approvals.dialog_running():
+    while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return
-        time.sleep(min(MUTATION_APPROVAL_POLL_SECONDS, remaining))
+        if wake():
+            return
+        if approvals.dialog_open() and not approvals.dialog_running():
+            return
+        time.sleep(min(SYNC_NOW_POLL_SECONDS, remaining))
 
 
 def local_reauth_can_satisfy_binding(config: dict[str, Any]) -> bool:
@@ -6866,12 +6823,1052 @@ def restored_consecutive_failures(status: dict[str, Any]) -> int:
         return 0
 
 
-def cmd_sync(args: argparse.Namespace) -> None:
+LEGACY_TMP_LOGS = (
+    Path("/tmp/icloud-reminders-google-sync.out.log"),
+    Path("/tmp/icloud-reminders-google-sync.err.log"),
+)
+
+
+def prepare_private_log(path: Path, max_bytes: int) -> None:
+    """Make the log directory private and rotate an oversized log once.
+
+    The log carries reminder and task titles, so it lives in a 0700
+    directory, is written 0600, and is never followed through a symlink.
+    """
+
+    directory = path.parent
+    if directory.is_symlink():
+        raise SystemExit(f"Refusing to use a symlinked log directory: {directory}")
+    directory.mkdir(parents=True, exist_ok=True)
+    os.chmod(directory, 0o700)
+    if path.is_symlink():
+        raise SystemExit(f"Refusing to write the log through a symlink: {path}")
+    if max_bytes > 0 and path.is_file() and path.stat().st_size >= max_bytes:
+        rotated = path.with_name(path.name + ".1")
+        if rotated.is_symlink():
+            raise SystemExit(f"Refusing to rotate the log onto a symlink: {rotated}")
+        with contextlib.suppress(FileNotFoundError):
+            rotated.unlink()
+        os.replace(path, rotated)
+        os.chmod(rotated, 0o600)
+
+
+def open_private_log(path: Path, max_bytes: int) -> Any:
+    prepare_private_log(path, max_bytes)
+    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags, 0o600)
+    os.fchmod(descriptor, 0o600)
+    return os.fdopen(descriptor, "a", buffering=1, encoding="utf-8", errors="replace")
+
+
+def retire_legacy_tmp_logs() -> list[str]:
+    """Delete world-readable logs that very old installs left in /tmp."""
+
+    removed: list[str] = []
+    for path in LEGACY_TMP_LOGS:
+        for candidate in (path, path.with_name(path.name + ".1")):
+            try:
+                info = candidate.lstat()
+            except FileNotFoundError:
+                continue
+            if stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid():
+                candidate.unlink()
+                removed.append(str(candidate))
+    return removed
+
+
+class LoopStopRequested(Exception):
+    """SIGTERM arrived while the scheduler was idle."""
+
+
+_LOOP_SIGNALS = {"in_cycle": False, "stop": False}
+
+
+def handle_loop_termination(_signum: int, _frame: Any) -> None:
+    # Never interrupt a cycle half-way: finish it, then stop. While idle,
+    # leave the wait immediately.
+    _LOOP_SIGNALS["stop"] = True
+    if not _LOOP_SIGNALS["in_cycle"]:
+        raise LoopStopRequested()
+
+
+def acquire_loop_lock(config: dict[str, Any]) -> Any:
+    """Hold run-loop.lock for this process's lifetime; None if another loop has it."""
+
+    path = loop_lock_path(config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a", encoding="utf-8")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None
+    with contextlib.suppress(OSError):
+        os.chmod(path, 0o600)
+    return handle
+
+
+def condition_for_state(state: str, *, paused: bool = False) -> str:
+    if paused:
+        return "paused"
+    return {
+        "ok": "healthy",
+        "awaiting_mutation_approval": "mutation_approval_pending",
+        "blocked_mutation_plan": "mutation_blocked",
+        "auth_required": "auth_required",
+        "auth_timeout": "auth_required",
+        "auth_prompt_open": "auth_required",
+        "account_binding_required": "account_binding_required",
+        "failed": "failed",
+        "running": "running",
+        "paused": "paused",
+    }.get(state, "unknown")
+
+
+def loop_wake_requested(
+    config: dict[str, Any],
+    *,
+    was_paused: bool,
+    cycle_started_wall: float,
+    cycle_started_monotonic: float,
+) -> bool:
+    paused = sync_paused(config)
+    if paused != was_paused:
+        return True
+    if paused:
+        return False
+    request = sync_now_path(config)
+    try:
+        requested_at = request.stat().st_mtime
+    except FileNotFoundError:
+        return False
+    if requested_at <= cycle_started_wall:
+        # Asked for before the cycle that just ran started: already served.
+        with contextlib.suppress(FileNotFoundError):
+            request.unlink()
+        return False
+    minimum_gap = float(config.get("trigger_min_interval_seconds") or 0)
+    return time.monotonic() - cycle_started_monotonic >= minimum_gap
+
+
+def text_path_argument(args: argparse.Namespace, name: str) -> str | None:
+    value = getattr(args, name, None)
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def run_loop_cycle(
+    config: dict[str, Any],
+    approvals: MutationPlanApprovals,
+    consecutive_failures: int,
+) -> int:
+    """One scheduler cycle with its error handling; returns the failure streak."""
+    started = utc_now_text()
+    print(f"[{started}] sync start", flush=True)
+    try:
+        approvals.collect()
+        with sync_lock(config, wait=False) as acquired:
+            if acquired:
+                write_sync_status(
+                    config,
+                    {
+                        "state": "running",
+                        "last_start_at": started,
+                        "last_error": "",
+                        "mutation_plan": None,
+                        "consecutive_failures": consecutive_failures,
+                    },
+                )
+                result = run_scheduled_sync(config, approvals)
+                consecutive_failures = 0
+                record_scheduled_sync_result(config, result)
+            else:
+                print("Another sync is already running; skipping this cycle.", flush=True)
+    except KeyboardInterrupt:
+        approvals.close()
+        raise
+    except MutationPlanApprovalRequired as exc:
+        # Reached only when a held or an approved pass is blocked itself.
+        # The question to the user, if any, stays as it is.
+        consecutive_failures += 1
+        eprint(f"Sync loop blocked by mutation plan: {exc}")
+        write_sync_status(
+            config,
+            {
+                "state": "blocked_mutation_plan",
+                "last_end_at": utc_now_text(),
+                "last_error": str(exc),
+                "mutation_plan": exc.summary,
+                "consecutive_failures": consecutive_failures,
+            },
+        )
+    except AccountBindingRequired as exc:
+        consecutive_failures += 1
+        eprint(f"Sync loop account binding blocked: {exc}")
+        write_sync_status(
+            config,
+            {
+                "state": "account_binding_required",
+                "last_end_at": utc_now_text(),
+                "last_error": str(exc),
+                "consecutive_failures": consecutive_failures,
+            },
+        )
+        notify_sync_problem(config, message_binding_paused())
+    except AuthenticationRequired as exc:
+        consecutive_failures += 1
+        eprint(f"Sync loop auth required: {exc}")
+        error_text = str(exc)
+        write_sync_status(
+            config,
+            {
+                "state": "auth_required",
+                "last_end_at": utc_now_text(),
+                "last_error": error_text,
+                "consecutive_failures": consecutive_failures,
+            },
+        )
+        notify_sync_problem(config, message_auth_required())
+        if maybe_run_auto_reauth(config, error_text):
+            print("Retrying sync after automatic Google OAuth login.", flush=True)
+            try:
+                with sync_lock(config, wait=False) as acquired:
+                    if acquired:
+                        result = run_scheduled_sync(config, approvals)
+                        consecutive_failures = 0
+                        record_scheduled_sync_result(config, result)
+                    else:
+                        print("Another sync is already running; skipping retry.", flush=True)
+            except AuthenticationRequired as retry_exc:
+                consecutive_failures += 1
+                eprint(f"Sync retry still requires auth: {retry_exc}")
+                write_sync_status(
+                    config,
+                    {
+                        "state": "auth_required",
+                        "last_end_at": utc_now_text(),
+                        "last_error": str(retry_exc),
+                        "consecutive_failures": consecutive_failures,
+                    },
+                )
+                notify_sync_problem(config, message_auth_required())
+            except MutationPlanApprovalRequired as retry_exc:
+                consecutive_failures += 1
+                eprint(f"Sync retry blocked by mutation plan: {retry_exc}")
+                write_sync_status(
+                    config,
+                    {
+                        "state": "blocked_mutation_plan",
+                        "last_end_at": utc_now_text(),
+                        "last_error": str(retry_exc),
+                        "mutation_plan": retry_exc.summary,
+                        "consecutive_failures": consecutive_failures,
+                    },
+                )
+            except AccountBindingRequired as retry_exc:
+                consecutive_failures += 1
+                eprint(f"Sync retry account binding blocked: {retry_exc}")
+                write_sync_status(
+                    config,
+                    {
+                        "state": "account_binding_required",
+                        "last_end_at": utc_now_text(),
+                        "last_error": str(retry_exc),
+                        "consecutive_failures": consecutive_failures,
+                    },
+                )
+                notify_sync_problem(config, message_binding_paused())
+            except SystemExit as retry_exc:
+                consecutive_failures += 1
+                eprint(f"Sync retry error: {retry_exc}")
+                write_sync_status(
+                    config,
+                    {
+                        "state": "failed",
+                        "last_end_at": utc_now_text(),
+                        "last_error": str(retry_exc),
+                        "consecutive_failures": consecutive_failures,
+                    },
+                )
+                notify_sync_problem(config, message_sync_failed(retry_exc))
+            except Exception as retry_exc:  # noqa: BLE001 - keep the scheduler alive after retry failures.
+                consecutive_failures += 1
+                eprint(f"Sync retry error: {retry_exc}")
+                write_sync_status(
+                    config,
+                    {
+                        "state": "failed",
+                        "last_end_at": utc_now_text(),
+                        "last_error": str(retry_exc),
+                        "consecutive_failures": consecutive_failures,
+                    },
+                )
+                notify_sync_problem(config, message_sync_failed(retry_exc))
+    except SystemExit as exc:
+        consecutive_failures += 1
+        eprint(f"Sync loop error: {exc}")
+        write_sync_status(
+            config,
+            {
+                "state": "failed",
+                "last_end_at": utc_now_text(),
+                "last_error": str(exc),
+                "consecutive_failures": consecutive_failures,
+            },
+        )
+        notify_sync_problem(config, message_sync_failed(exc))
+    except Exception as exc:  # noqa: BLE001 - a scheduler should log and keep running.
+        consecutive_failures += 1
+        eprint(f"Sync loop error: {exc}")
+        write_sync_status(
+            config,
+            {
+                "state": "failed",
+                "last_end_at": utc_now_text(),
+                "last_error": str(exc),
+                "consecutive_failures": consecutive_failures,
+            },
+        )
+        notify_sync_problem(config, message_sync_failed(exc))
+    print(f"[{utc_now_text()}] sync end", flush=True)
+    return consecutive_failures
+
+
+class LoopLog:
+    """The run-loop's private log file, rotated by size between cycles."""
+
+    def __init__(self, path: Path, max_bytes: int) -> None:
+        self.path = path
+        self.max_bytes = max_bytes
+        self.stream = open_private_log(path, max_bytes)
+
+    def rotate_if_needed(self) -> None:
+        if self.max_bytes <= 0:
+            return
+        try:
+            size = os.fstat(self.stream.fileno()).st_size
+        except (OSError, ValueError):
+            return
+        if size < self.max_bytes:
+            return
+        self.stream.flush()
+        self.stream.close()
+        self.stream = open_private_log(self.path, self.max_bytes)
+        sys.stdout = sys.stderr = self.stream
+
+    def close(self) -> None:
+        with contextlib.suppress(OSError, ValueError):
+            self.stream.close()
+
+
+def cmd_run_loop(args: argparse.Namespace) -> None:
+    log_file = text_path_argument(args, "log_file")
+    raw_max_bytes = getattr(args, "log_max_bytes", None)
+    max_bytes = raw_max_bytes if isinstance(raw_max_bytes, int) else DEFAULT_LOG_MAX_BYTES
+    original_streams = (sys.stdout, sys.stderr)
+    loop_log: LoopLog | None = None
+    if log_file:
+        loop_log = LoopLog(Path(log_file).expanduser(), max_bytes)
+        sys.stdout = sys.stderr = loop_log.stream
+    else:
+        harden_runtime_log_modes()
+    try:
+        run_scheduler(args, loop_log)
+    finally:
+        sys.stdout, sys.stderr = original_streams
+        if loop_log is not None:
+            loop_log.close()
+
+
+def run_scheduler(args: argparse.Namespace, loop_log: LoopLog | None) -> None:
     config = load_config(args)
+    apply_network_config(config)
+    interval = int(config["sync_interval_seconds"])
+    if interval < MIN_SYNC_INTERVAL_SECONDS:
+        raise SystemExit("sync_interval_seconds must be at least 60.")
+
+    lock_handle = acquire_loop_lock(config)
+    if lock_handle is None:
+        raise SystemExit(
+            tr(
+                "Another Local Tasks Bridge sync loop is already running; not starting a second one.",
+                "已有另一个 Local Tasks Bridge 同步循环在运行，不会再启动第二个。",
+            )
+        )
+    previous_handler: Any = None
+    install_handler = threading.current_thread() is threading.main_thread()
+    if install_handler:
+        previous_handler = signal.signal(signal.SIGTERM, handle_loop_termination)
+    _LOOP_SIGNALS.update(in_cycle=False, stop=False)
+    approvals = MutationPlanApprovals(config)
+    try:
+        print(f"Starting sync loop every {interval} seconds. Press Ctrl-C to stop.", flush=True)
+        emit_event("loop_started", version=__version__, interval=interval)
+        consecutive_failures = restored_consecutive_failures(read_sync_status(config))
+        was_paused = False
+        while True:
+            cycle_started_at = time.monotonic()
+            cycle_started_wall = time.time()
+            if sync_paused(config):
+                if not was_paused:
+                    print(f"[{utc_now_text()}] sync paused", flush=True)
+                    write_sync_status(config, {"state": "paused", "paused_at": utc_now_text()})
+                    emit_event("paused")
+                was_paused = True
+            else:
+                if was_paused:
+                    print(f"[{utc_now_text()}] sync resumed", flush=True)
+                    emit_event("resumed")
+                    was_paused = False
+                with contextlib.suppress(FileNotFoundError):
+                    sync_now_path(config).unlink()
+                emit_event("cycle_started")
+                _LOOP_SIGNALS["in_cycle"] = True
+                try:
+                    consecutive_failures = run_loop_cycle(config, approvals, consecutive_failures)
+                finally:
+                    _LOOP_SIGNALS["in_cycle"] = False
+                state = str(read_sync_status(config).get("state") or "")
+                emit_event(
+                    "cycle_finished",
+                    state=state,
+                    condition=condition_for_state(state),
+                    consecutive_failures=consecutive_failures,
+                )
+            if loop_log is not None:
+                loop_log.rotate_if_needed()
+            if _LOOP_SIGNALS["stop"]:
+                approvals.close()
+                print("Stopping sync loop.", flush=True)
+                return
+            paused_now = was_paused
+            try:
+                wait_for_next_cycle(
+                    interval,
+                    approvals,
+                    cycle_started_at=cycle_started_at,
+                    wake=lambda: loop_wake_requested(
+                        config,
+                        was_paused=paused_now,
+                        cycle_started_wall=cycle_started_wall,
+                        cycle_started_monotonic=cycle_started_at,
+                    ),
+                )
+            except KeyboardInterrupt:
+                approvals.close()
+                print("Stopping sync loop.", flush=True)
+                return
+    except LoopStopRequested:
+        approvals.close()
+        print("Stopping sync loop.", flush=True)
+    finally:
+        if install_handler:
+            signal.signal(signal.SIGTERM, previous_handler or signal.SIG_DFL)
+        lock_handle.close()
+
+
+# --- Command-line interface for people and for the menu bar app -------------
+#
+# Every command that takes --json prints exactly one JSON object on stdout and
+# sends progress text to stderr; see docs/app-engine-contract.md.
+
+EXIT_CODES = {
+    "failed": 1,
+    "auth_required": 3,
+    "account_binding_required": 4,
+    "approval_required": 5,
+    "reminders_unavailable": 6,
+    "config_invalid": 7,
+    "oauth_client_missing": 8,
+    "network": 9,
+    "plan_changed": 10,
+}
+
+
+class CommandError(Exception):
+    def __init__(self, code: str, message: str, **extra: Any) -> None:
+        self.code = code if code in EXIT_CODES else "failed"
+        self.message = message
+        self.extra = extra
+        super().__init__(message)
+
+
+def message_network() -> str:
+    return tr(
+        "Google could not be reached. Check the network or proxy setting and try again.",
+        "无法连接到 Google。请检查网络或代理设置后重试。",
+    )
+
+
+def classify_exception(exc: BaseException) -> tuple[str, str, dict[str, Any]]:
+    """Map an exception to (error code, localized message, extra JSON fields)."""
+
+    if isinstance(exc, CommandError):
+        return exc.code, exc.message, dict(exc.extra)
+    if isinstance(exc, MutationPlanApprovalRequired):
+        return (
+            "approval_required",
+            tr(
+                "The plan deletes or completes more items than the safety limit allows; review it first.",
+                "这次计划删除或完成的条目超过了安全上限，请先确认。",
+            ),
+            {"plan": dict(exc.summary or {})},
+        )
+    if isinstance(exc, AccountBindingRequired):
+        return "account_binding_required", message_binding_paused(), {}
+    if isinstance(exc, (AuthenticationRequired, OAuthCallbackTimeout)):
+        return "auth_required", str(exc) or message_auth_required(), {}
+    if isinstance(exc, RemindersUnavailable):
+        return "reminders_unavailable", str(exc.code if isinstance(exc.code, str) else exc), {}
+    if isinstance(exc, OAuthClientMissing):
+        return "oauth_client_missing", str(exc.code if isinstance(exc.code, str) else exc), {}
+    if isinstance(exc, GoogleApiError):
+        if exc.status in (401, 403):
+            return "auth_required", str(exc), {}
+        if exc.status == 429 or exc.status >= 500:
+            return "network", str(exc), {}
+        return "failed", str(exc), {}
+    if isinstance(exc, OAuthTokenError):
+        if exc.invalid_grant:
+            return "auth_required", message_auth_required(), {}
+        if exc.status == 0:
+            return "network", message_network(), {}
+        return "failed", str(exc), {}
+    if isinstance(exc, (urllib.error.URLError, TimeoutError, ConnectionError)):
+        return "network", message_network(), {}
+    if isinstance(exc, SystemExit):
+        text = exc.code if isinstance(exc.code, str) else str(exc)
+        return "failed", text or tr("The command failed.", "命令执行失败。"), {}
+    return "failed", str(exc) or exc.__class__.__name__, {}
+
+
+def json_mode(args: argparse.Namespace) -> bool:
+    return getattr(args, "json", False) is True
+
+
+def write_json_document(payload: dict[str, Any], stream: Any = None) -> None:
+    target = stream or sys.stdout
+    target.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+    target.flush()
+
+
+def run_cli_command(
+    args: argparse.Namespace,
+    handler: Callable[[], dict[str, Any]],
+    human: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any] | None:
+    """Run a command; in JSON mode, emit one document and map failures to exit codes."""
+
+    if not json_mode(args):
+        try:
+            result = handler()
+        except CommandError as exc:
+            raise SystemExit(exc.message) from exc
+        except (AccountBindingRequired, AuthenticationRequired) as exc:
+            raise SystemExit(str(exc)) from exc
+        if human is not None:
+            human(result)
+        return result
+    real_stdout = sys.stdout
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            result = handler()
+    except KeyboardInterrupt:
+        raise
+    except BaseException as exc:  # noqa: BLE001 - every failure becomes one JSON document.
+        if isinstance(exc, SystemExit) and exc.code in (0, None):
+            result = {}
+        else:
+            code, message, extra = classify_exception(exc)
+            write_json_document({"ok": False, "error": {"code": code, "message": message}, **extra}, real_stdout)
+            raise SystemExit(EXIT_CODES[code]) from None
+    write_json_document({"ok": True, **(result or {})}, real_stdout)
+    return result
+
+
+def load_cli_config(args: argparse.Namespace) -> dict[str, Any]:
+    try:
+        config = load_config(args)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise CommandError("config_invalid", tr(f"The config file is invalid: {exc}", f"配置文件无效：{exc}")) from exc
+    except SystemExit as exc:
+        if isinstance(exc, (OAuthClientMissing, RemindersUnavailable)):
+            raise
+        text = exc.code if isinstance(exc.code, str) else str(exc)
+        raise CommandError("config_invalid", text) from exc
+    apply_network_config(config)
+    return config
+
+
+# version -------------------------------------------------------------------
+
+
+def cmd_version(args: argparse.Namespace) -> None:
+    def handler() -> dict[str, Any]:
+        return {
+            "version": __version__,
+            "python": ".".join(str(part) for part in sys.version_info[:3]),
+            "engine_path": str(Path(__file__).resolve()),
+        }
+
+    run_cli_command(args, handler, lambda result: print(f"{PRODUCT_NAME} {result['version']}"))
+
+
+# status --------------------------------------------------------------------
+
+
+LEGACY_CONFIG_CANDIDATES = (
+    (LEGACY_TRIAL_CONFIG_DIR_NAME, "daily-config.json"),
+    (LEGACY_APP_NAME, "config.json"),
+)
+
+
+def legacy_config_paths() -> list[Path]:
+    base = Path(os.environ.get("XDG_CONFIG_HOME", "~/.config")).expanduser()
+    found = []
+    for directory, name in LEGACY_CONFIG_CANDIDATES:
+        candidate = base / directory / name
+        if candidate.is_file():
+            found.append(candidate)
+    return found
+
+
+def legacy_install_detected(config: dict[str, Any]) -> bool:
+    if expand_path(config["_config_path"]).exists():
+        return False
+    return bool(legacy_config_paths())
+
+
+def status_payload(config: dict[str, Any]) -> dict[str, Any]:
+    snapshot = collect_management_snapshot(config)
+    condition, headline, action = management_condition(snapshot)
+    state = snapshot["status_state"]
+    if snapshot["status_result"] == "missing":
+        state = "never_synced"
+    return {
+        "version": __version__,
+        "config_path": str(expand_path(config["_config_path"])),
+        "config_exists": snapshot["config_exists"],
+        "setup_completed": snapshot["setup_completed"],
+        "condition": condition,
+        "headline": headline,
+        "action": action,
+        "state": state,
+        "paused": snapshot["paused"],
+        "last_success_at": snapshot["last_success_at"],
+        "last_start_at": snapshot["last_start_at"],
+        "last_end_at": snapshot["last_end_at"],
+        "updated_at": snapshot["updated_at"],
+        "consecutive_failures": snapshot["failure_count"],
+        "pending_destructive_counts": snapshot["pending_destructive_counts"],
+        "oauth_client": snapshot["oauth_client"],
+        "token_ready": snapshot["auth_material_ready"],
+        "include_lists": list(config.get("include_lists") or []),
+        "sync_interval_seconds": int(config["sync_interval_seconds"]),
+        "loop_running": bool(snapshot["agent_loaded"]),
+        "agent": {
+            "installed": snapshot["launch_agent_installed"],
+            "loaded": snapshot["launch_agent_loaded"],
+            "label": LAUNCH_AGENT_LABEL,
+        },
+        "log_path": str(default_engine_log_path()),
+        "legacy_install_detected": legacy_install_detected(config),
+    }
+
+
+def cmd_status(args: argparse.Namespace) -> None:
+    if not json_mode(args):
+        config = load_config(args)
+        print_management_summary(config)
+        return
+    run_cli_command(args, lambda: status_payload(load_cli_config(args)))
+
+
+# lists ---------------------------------------------------------------------
+
+
+def all_reminders_lists(config: dict[str, Any]) -> list[dict[str, Any]]:
+    if str(config.get("reminders_source") or "auto") == "sqlite":
+        unfiltered = dict(config)
+        unfiltered["include_lists"] = []
+        return run_reminders_sqlite_lists_export(unfiltered)
+    return run_reminders_eventkit_lists_export(config, all_lists=True)
+
+
+def cmd_lists(args: argparse.Namespace) -> None:
+    def handler() -> dict[str, Any]:
+        config = load_cli_config(args)
+        apple = [
+            {
+                "id": str(item.get("id") or ""),
+                "title": str(item.get("title") or ""),
+                "account_title": str(item.get("account_title") or ""),
+                "account_id": str(item.get("account_id") or ""),
+            }
+            for item in all_reminders_lists(config)
+            if isinstance(item, dict)
+        ]
+        google = None
+        if getattr(args, "google", False) is True:
+            client = GoogleTasksClient(config)
+            google = [
+                {"id": str(item.get("id") or ""), "title": str(item.get("title") or "")}
+                for item in client.list_tasklists()
+            ]
+        return {"apple": apple, "google": google}
+
+    def human(result: dict[str, Any]) -> None:
+        print(tr("Apple Reminders lists:", "Apple 提醒事项清单："))
+        for item in result["apple"]:
+            print(f"  - {item['title']}  ({item['account_title']})")
+        if result["google"] is not None:
+            print(tr("Google Tasks lists:", "Google Tasks 清单："))
+            for item in result["google"]:
+                print(f"  - {item['title']}")
+
+    run_cli_command(args, handler, human)
+
+
+# config --------------------------------------------------------------------
+
+
+def _expect_bool(key: str, value: Any) -> bool:
+    if not isinstance(value, bool):
+        raise CommandError("config_invalid", f"{key} must be true or false")
+    return value
+
+
+def _expect_int(key: str, value: Any, minimum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise CommandError("config_invalid", f"{key} must be an integer >= {minimum}")
+    return value
+
+
+def _expect_choice(key: str, value: Any, choices: set[str]) -> str:
+    if not isinstance(value, str) or value not in choices:
+        raise CommandError("config_invalid", f"{key} must be one of: {', '.join(sorted(choices))}")
+    return value
+
+
+def _expect_lists(key: str, value: Any) -> list[str]:
+    if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
+        raise CommandError("config_invalid", f"{key} must be a list of Reminders list titles")
+    unique: list[str] = []
+    for item in value:
+        if item not in unique:
+            unique.append(item)
+    return unique
+
+
+def _expect_ratio(key: str, value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= float(value) <= 1:
+        raise CommandError("config_invalid", f"{key} must be a number between 0 and 1")
+    return float(value)
+
+
+def _expect_list_policies(key: str, value: Any) -> dict[str, Any]:
+    try:
+        normalize_list_policies(value)
+    except SystemExit as exc:
+        raise CommandError("config_invalid", str(exc.code)) from exc
+    return dict(value or {})
+
+
+def _expect_proxy(key: str, value: Any) -> str:
+    if not isinstance(value, str):
+        raise CommandError("config_invalid", f"{key} must be a string")
+    try:
+        return normalize_proxy_setting(value)
+    except SystemExit as exc:
+        raise CommandError("config_invalid", str(exc.code)) from exc
+
+
+def _expect_optional_text(key: str, value: Any) -> str | None:
+    if value is not None and not isinstance(value, str):
+        raise CommandError("config_invalid", f"{key} must be a string or null")
+    return value
+
+
+CONFIG_MERGE_VALIDATORS: dict[str, Callable[[str, Any], Any]] = {
+    "include_lists": _expect_lists,
+    "list_policies": _expect_list_policies,
+    "bidirectional": _expect_bool,
+    "delete_stale": _expect_bool,
+    "conflict_policy": lambda key, value: _expect_choice(key, value, CONFLICT_POLICIES),
+    "tasks_sync_undated": _expect_bool,
+    "tasks_import_unsynced": _expect_bool,
+    "tasks_create_missing_lists": _expect_bool,
+    "tasks_complete_stale": _expect_bool,
+    "sync_interval_seconds": lambda key, value: _expect_int(key, value, MIN_SYNC_INTERVAL_SECONDS),
+    "max_destructive_changes": lambda key, value: _expect_int(key, value, 0),
+    "max_destructive_ratio": _expect_ratio,
+    "mutation_approval_prompt": _expect_bool,
+    "macos_notifications": _expect_bool,
+    "language": lambda key, value: _expect_choice(key, value, LANGUAGE_PREFERENCES),
+    "proxy": _expect_proxy,
+    "oauth_client": lambda key, value: _expect_choice(key, value, OAUTH_CLIENT_MODES),
+    "setup_completed_at": _expect_optional_text,
+    "trigger_min_interval_seconds": lambda key, value: _expect_int(key, value, 0),
+}
+CONFIG_VISIBLE_KEYS = tuple(CONFIG_MERGE_VALIDATORS)
+
+
+def config_view(config: dict[str, Any]) -> dict[str, Any]:
+    return {key: config.get(key) for key in CONFIG_VISIBLE_KEYS}
+
+
+def read_config_document(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        document = read_json(path)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CommandError("config_invalid", tr(f"The config file is invalid: {exc}", f"配置文件无效：{exc}")) from exc
+    if not isinstance(document, dict):
+        raise CommandError("config_invalid", tr("The config file is not a JSON object.", "配置文件不是 JSON 对象。"))
+    return document
+
+
+def save_config_document(path: Path, document: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    """Validate a complete config document by loading it, then replace the file atomically."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with contextlib.suppress(OSError):
+        os.chmod(path.parent, 0o700)
+    candidate = path.with_name(f".{path.name}.{os.getpid()}.candidate")
+    write_json_atomic(candidate, document)
+    try:
+        probe = argparse.Namespace(**{**vars(args), "config": str(candidate)})
+        for key in ("credentials_path", "token_path", "state_path", "status_path"):
+            setattr(probe, key, None)
+        loaded = load_config(probe)
+    except SystemExit as exc:
+        with contextlib.suppress(FileNotFoundError):
+            candidate.unlink()
+        text = exc.code if isinstance(exc.code, str) else str(exc)
+        raise CommandError("config_invalid", text) from exc
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            candidate.unlink()
+        raise
+    os.replace(candidate, path)
+    loaded["_config_path"] = str(path)
+    return loaded
+
+
+def cmd_config(args: argparse.Namespace) -> None:
+    action = str(getattr(args, "config_action", "") or "show")
+    path = expand_path(args.config)
+
+    def show() -> dict[str, Any]:
+        config = load_cli_config(args)
+        return {"config_path": str(path), "config_exists": path.exists(), "config": config_view(config)}
+
+    def init() -> dict[str, Any]:
+        created = False
+        if path.exists() and not getattr(args, "force", False) is True:
+            config = load_cli_config(args)
+        else:
+            if path.exists():
+                backup_management_files(load_cli_config(args), "config-init")
+            config = save_config_document(path, product_default_config(), args)
+            created = True
+        return {"config_path": str(path), "created": created, "config": config_view(config)}
+
+    def merge() -> dict[str, Any]:
+        raw = sys.stdin.read()
+        try:
+            changes = json.loads(raw or "{}")
+        except json.JSONDecodeError as exc:
+            raise CommandError("config_invalid", f"stdin is not valid JSON: {exc}") from exc
+        if not isinstance(changes, dict):
+            raise CommandError("config_invalid", "stdin must contain a JSON object")
+        unknown = sorted(set(changes) - set(CONFIG_MERGE_VALIDATORS))
+        if unknown:
+            raise CommandError("config_invalid", f"Unsupported setting(s): {', '.join(unknown)}")
+        document = read_config_document(path) or product_default_config()
+        for key, value in changes.items():
+            validated = CONFIG_MERGE_VALIDATORS[key](key, value)
+            if value is None and key == "setup_completed_at":
+                document.pop(key, None)
+            else:
+                document[key] = validated
+        config = save_config_document(path, document, args)
+        return {"config_path": str(path), "config_exists": True, "config": config_view(config)}
+
+    def validate() -> dict[str, Any]:
+        config = load_cli_config(args)
+        return {"config_path": str(path), "valid": True, "config": config_view(config)}
+
+    handlers = {"show": show, "init": init, "merge": merge, "validate": validate}
+
+    def human(result: dict[str, Any]) -> None:
+        print(json.dumps(result.get("config"), indent=2, ensure_ascii=False, sort_keys=True))
+
+    run_cli_command(args, handlers[action], human)
+
+
+def cmd_init_config(args: argparse.Namespace) -> None:
+    path = expand_path(args.config)
+    if path.exists() and not args.force:
+        raise SystemExit(f"Config already exists: {path}\nUse --force to overwrite it.")
+    write_json_atomic(path, product_default_config())
+    print(f"Wrote config template: {path}")
+
+
+# client --------------------------------------------------------------------
+
+
+def masked_client_id(client_id: str) -> str:
+    prefix, _separator, domain = client_id.partition("-")
+    return f"{prefix[:4]}…{domain[-28:]}" if domain else f"{client_id[:4]}…"
+
+
+def cmd_client(args: argparse.Namespace) -> None:
+    action = str(getattr(args, "client_action", "") or "status")
+
+    def import_client() -> dict[str, Any]:
+        config = load_cli_config(args)
+        source = Path(str(args.path)).expanduser()
+        try:
+            document = read_json(source)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise CommandError(
+                "oauth_client_missing",
+                tr(f"Could not read the OAuth client file: {exc}", f"无法读取 OAuth 客户端文件：{exc}"),
+            ) from exc
+        try:
+            client = validate_oauth_client_document(document)
+        except SystemExit as exc:
+            raise CommandError("oauth_client_missing", str(exc.code)) from exc
+        destination = expand_path(config["credentials_path"])
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with contextlib.suppress(OSError):
+            os.chmod(destination.parent, 0o700)
+        write_json_atomic(destination, {"installed": document["installed"]})
+        path = expand_path(args.config)
+        document_config = read_config_document(path) or product_default_config()
+        document_config["oauth_client"] = "custom"
+        save_config_document(path, document_config, args)
+        return {"client_id_hint": masked_client_id(client["client_id"]), "credentials_path": str(destination)}
+
+    def status() -> dict[str, Any]:
+        return oauth_client_status(load_cli_config(args))
+
+    def human(result: dict[str, Any]) -> None:
+        print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True))
+
+    run_cli_command(args, import_client if action == "import" else status, human)
+
+
+# auth, account, signout ----------------------------------------------------
+
+
+def cmd_auth(args: argparse.Namespace) -> None:
+    def handler() -> dict[str, Any]:
+        config = load_cli_config(args) if json_mode(args) else load_config(args)
+        if not json_mode(args):
+            apply_network_config(config)
+        if getattr(args, "no_browser", False) is True:
+            config["manual_oauth_browser"] = True
+        try:
+            result = run_auth_flow(config)
+        except OAuthCallbackTimeout as exc:
+            raise AuthenticationRequired(
+                tr("Timed out waiting for the Google sign-in to finish.", "等待 Google 登录完成超时。")
+            ) from exc
+        write_sync_status(
+            config,
+            {
+                "state": "auth_refreshed",
+                "last_manual_auth_completed_at": utc_now_text(),
+                **auto_reauth_failure_epoch_reset_updates(),
+                "last_error": "",
+            },
+        )
+        with contextlib.suppress(OSError):
+            touch_private_file(sync_now_path(config))
+        return result
+
+    run_cli_command(args, handler)
+
+
+def cmd_account(args: argparse.Namespace) -> None:
+    def handler() -> dict[str, Any]:
+        config = load_cli_config(args)
+        result = check_google_connection(config)
+        if result["state"] == "ok":
+            return {
+                "account_email": result.get("account_email") or "",
+                "account_fingerprint": result.get("account_fingerprint") or "",
+                "tasklist_count": int(result.get("tasklist_count") or 0),
+            }
+        code = "network" if result["state"] == "unavailable" else ("failed" if result["state"] == "api_error" else "auth_required")
+        raise CommandError(code, str(result.get("message") or ""))
+
+    def human(result: dict[str, Any]) -> None:
+        print(google_connection_line(result))
+
+    run_cli_command(args, handler, human)
+
+
+def revoke_google_token(token: dict[str, Any]) -> bool:
+    value = str(token.get("refresh_token") or token.get("access_token") or "")
+    if not value:
+        return False
+    try:
+        post_form(OAUTH_REVOKE_URL, {"token": value}, attempts=1)
+    except OAuthTokenError as exc:
+        # 400 means Google no longer knows the token: it is already revoked.
+        return exc.status == 400
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def cmd_signout(args: argparse.Namespace) -> None:
+    def handler() -> dict[str, Any]:
+        config = load_cli_config(args)
+        token_path = expand_path(config["token_path"])
+        revoked = False
+        removed = False
+        if token_path.is_file():
+            backup_management_files(config, "signout")
+            if getattr(args, "revoke", False) is True:
+                with contextlib.suppress(OSError, json.JSONDecodeError):
+                    revoked = revoke_google_token(read_json(token_path))
+            token_path.unlink()
+            removed = True
+        write_sync_status(config, {"state": "auth_required", "last_error": "", "last_signed_out_at": utc_now_text()})
+        return {"revoked": revoked, "token_removed": removed}
+
+    run_cli_command(args, handler, lambda result: print(tr("Signed out of Google.", "已退出 Google 登录。")))
+
+
+# sync ----------------------------------------------------------------------
+
+
+def cmd_sync(args: argparse.Namespace) -> None:
+    as_json = json_mode(args)
+    config = load_cli_config(args) if as_json else load_config(args)
+    if not as_json:
+        apply_network_config(config)
+
+    def handler() -> dict[str, Any]:
+        summary = sync_once(config, dry_run=bool(args.dry_run is True))
+        return {
+            "dry_run": bool(args.dry_run is True),
+            "summary": summary or {},
+            "plan": config.get("_last_mutation_plan") or {},
+        }
+
+    run_cli_command(args, handler)
+
+
+def sync_once(config: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
     with sync_lock(config, wait=True) as acquired:
         if not acquired:
             print("Another sync is already running; skipping.")
-            return
+            return {}
         started = utc_now_text()
         write_sync_status(
             config,
@@ -6883,7 +7880,7 @@ def cmd_sync(args: argparse.Namespace) -> None:
             },
         )
         try:
-            run_sync(config, dry_run=bool(args.dry_run))
+            summary = run_sync(config, dry_run=dry_run)
         except MutationPlanApprovalRequired:
             notify_sync_problem(
                 config,
@@ -6903,7 +7900,7 @@ def cmd_sync(args: argparse.Namespace) -> None:
                 },
             )
             notify_sync_problem(config, message_binding_paused())
-            raise SystemExit(str(exc)) from exc
+            raise
         except AuthenticationRequired as exc:
             write_sync_status(
                 config,
@@ -6914,7 +7911,7 @@ def cmd_sync(args: argparse.Namespace) -> None:
                 },
             )
             notify_sync_problem(config, message_auth_required())
-            raise SystemExit(str(exc)) from exc
+            raise
         except Exception as exc:
             write_sync_status(
                 config,
@@ -6929,229 +7926,743 @@ def cmd_sync(args: argparse.Namespace) -> None:
         write_sync_status(
             config,
             {
-                "state": "ok" if not args.dry_run else "dry_run_ok",
+                "state": "ok" if not dry_run else "dry_run_ok",
                 "last_end_at": utc_now_text(),
                 "last_success_at": utc_now_text(),
                 **auto_reauth_failure_epoch_reset_updates(),
                 "last_error": "",
             },
         )
-        if not args.dry_run:
+        if not dry_run:
             notify_sync_ok(config)
+        return summary
 
 
-def cmd_run_loop(args: argparse.Namespace) -> None:
-    harden_runtime_log_modes()
-    config = load_config(args)
-    interval = int(config["sync_interval_seconds"])
-    if interval < 60:
-        raise SystemExit("sync_interval_seconds must be at least 60.")
+# approvals -----------------------------------------------------------------
 
-    print(f"Starting sync loop every {interval} seconds. Press Ctrl-C to stop.", flush=True)
-    consecutive_failures = restored_consecutive_failures(read_sync_status(config))
-    approvals = MutationPlanApprovals(config)
-    while True:
-        cycle_started_at = time.monotonic()
-        started = utc_now_text()
-        print(f"[{started}] sync start", flush=True)
+
+def approvals_review_payload(config: dict[str, Any]) -> dict[str, Any]:
+    plan = preview_mutation_plan(config)
+    if plan is None or not mutation_plan_limit_reasons(config, plan):
+        return {"pending": False, "items": [], "destructive_fingerprint": "", "destructive_count": 0}
+    review = mutation_plan_review(plan)
+    return {
+        "pending": True,
+        "destructive_fingerprint": review["destructive_fingerprint"],
+        "destructive_count": review["destructive_count"],
+        "population": review["population"],
+        "ratio": round(float(review["destructive_ratio"]), 6),
+        "items": [
+            {
+                "operation": str(item.get("operation") or ""),
+                "label": mutation_review_label(str(item.get("operation") or "")),
+                "list": str(item.get("list") or ""),
+                "title": str(item.get("title") or ""),
+            }
+            for item in review["items"]
+        ],
+    }
+
+
+def cmd_approvals(args: argparse.Namespace) -> None:
+    action = str(getattr(args, "approvals_action", "") or "show")
+
+    def locked(work: Callable[[dict[str, Any]], dict[str, Any]]) -> dict[str, Any]:
+        config = load_cli_config(args)
+        with sync_lock(config, wait=True) as acquired:
+            if not acquired:
+                raise CommandError("failed", tr("Another sync is running. Try again in a moment.", "另一轮同步正在进行，请稍后再试。"))
+            return work(config)
+
+    def show() -> dict[str, Any]:
+        return locked(approvals_review_payload)
+
+    def apply(config: dict[str, Any]) -> dict[str, Any]:
+        fingerprint = str(args.fingerprint or "").strip().lower()
+        current = approvals_review_payload(config)
+        if not current["pending"] or current["destructive_fingerprint"] != fingerprint:
+            raise CommandError(
+                "plan_changed",
+                tr(
+                    "The pending changes are different now; review them again.",
+                    "待确认的更改已经变化，请重新查看。",
+                ),
+            )
+        backup_management_files(config, "approve")
+        token = mutation_plan_approval_token({"fingerprint": fingerprint})
         try:
-            approvals.collect()
-            with sync_lock(config, wait=False) as acquired:
-                if acquired:
-                    write_sync_status(
-                        config,
-                        {
-                            "state": "running",
-                            "last_start_at": started,
-                            "last_error": "",
-                            "mutation_plan": None,
-                            "consecutive_failures": consecutive_failures,
-                        },
-                    )
-                    result = run_scheduled_sync(config, approvals)
-                    consecutive_failures = 0
-                    record_scheduled_sync_result(config, result)
-                else:
-                    print("Another sync is already running; skipping this cycle.", flush=True)
-        except KeyboardInterrupt:
-            approvals.close()
-            raise
+            run_management_sync(config, destructive_approval=token)
         except MutationPlanApprovalRequired as exc:
-            # Reached only when a held or an approved pass is blocked itself.
-            # The question to the user, if any, stays as it is.
-            consecutive_failures += 1
-            eprint(f"Sync loop blocked by mutation plan: {exc}")
-            write_sync_status(
-                config,
+            raise CommandError(
+                "plan_changed",
+                tr("The plan changed before it could be applied; nothing was applied.", "计划在执行前发生了变化，没有执行任何更改。"),
+            ) from exc
+        return {"applied": True, "destructive_count": current["destructive_count"]}
+
+    def hold() -> dict[str, Any]:
+        config = load_cli_config(args)
+        fingerprint = str(args.fingerprint or "").strip().lower()
+        if len(fingerprint) != 64 or any(character not in "0123456789abcdef" for character in fingerprint):
+            raise CommandError("plan_changed", tr("That is not a valid change fingerprint.", "这不是有效的更改指纹。"))
+        write_sync_status(
+            config,
+            {MUTATION_APPROVAL_STATUS_KEY: mutation_approval_memory(fingerprint, "hold", now=utc_now(), prompted=True)},
+        )
+        return {"held": True, "ask_again_in_seconds": int(config["mutation_approval_prompt_repeat_seconds"])}
+
+    def human(result: dict[str, Any]) -> None:
+        if action == "show":
+            if not result.get("pending"):
+                print(tr("No large change needs approval.", "没有需要确认的大批量更改。"))
+                return
+            print_mutation_review(
                 {
-                    "state": "blocked_mutation_plan",
-                    "last_end_at": utc_now_text(),
-                    "last_error": str(exc),
-                    "mutation_plan": exc.summary,
-                    "consecutive_failures": consecutive_failures,
-                },
+                    "destructive_count": result["destructive_count"],
+                    "population": result["population"],
+                    "destructive_ratio": result["ratio"],
+                    "items": result["items"],
+                }
             )
-        except AccountBindingRequired as exc:
-            consecutive_failures += 1
-            eprint(f"Sync loop account binding blocked: {exc}")
-            write_sync_status(
-                config,
-                {
-                    "state": "account_binding_required",
-                    "last_end_at": utc_now_text(),
-                    "last_error": str(exc),
-                    "consecutive_failures": consecutive_failures,
-                },
-            )
-            notify_sync_problem(config, message_binding_paused())
-        except AuthenticationRequired as exc:
-            consecutive_failures += 1
-            eprint(f"Sync loop auth required: {exc}")
-            error_text = str(exc)
-            write_sync_status(
-                config,
-                {
-                    "state": "auth_required",
-                    "last_end_at": utc_now_text(),
-                    "last_error": error_text,
-                    "consecutive_failures": consecutive_failures,
-                },
-            )
-            notify_sync_problem(config, message_auth_required())
-            if maybe_run_auto_reauth(config, error_text):
-                print("Retrying sync after automatic Google OAuth login.", flush=True)
-                try:
-                    with sync_lock(config, wait=False) as acquired:
-                        if acquired:
-                            result = run_scheduled_sync(config, approvals)
-                            consecutive_failures = 0
-                            record_scheduled_sync_result(config, result)
-                        else:
-                            print("Another sync is already running; skipping retry.", flush=True)
-                except AuthenticationRequired as retry_exc:
-                    consecutive_failures += 1
-                    eprint(f"Sync retry still requires auth: {retry_exc}")
-                    write_sync_status(
-                        config,
-                        {
-                            "state": "auth_required",
-                            "last_end_at": utc_now_text(),
-                            "last_error": str(retry_exc),
-                            "consecutive_failures": consecutive_failures,
-                        },
-                    )
-                    notify_sync_problem(config, message_auth_required())
-                except MutationPlanApprovalRequired as retry_exc:
-                    consecutive_failures += 1
-                    eprint(f"Sync retry blocked by mutation plan: {retry_exc}")
-                    write_sync_status(
-                        config,
-                        {
-                            "state": "blocked_mutation_plan",
-                            "last_end_at": utc_now_text(),
-                            "last_error": str(retry_exc),
-                            "mutation_plan": retry_exc.summary,
-                            "consecutive_failures": consecutive_failures,
-                        },
-                    )
-                except AccountBindingRequired as retry_exc:
-                    consecutive_failures += 1
-                    eprint(f"Sync retry account binding blocked: {retry_exc}")
-                    write_sync_status(
-                        config,
-                        {
-                            "state": "account_binding_required",
-                            "last_end_at": utc_now_text(),
-                            "last_error": str(retry_exc),
-                            "consecutive_failures": consecutive_failures,
-                        },
-                    )
-                    notify_sync_problem(config, message_binding_paused())
-                except SystemExit as retry_exc:
-                    consecutive_failures += 1
-                    eprint(f"Sync retry error: {retry_exc}")
-                    write_sync_status(
-                        config,
-                        {
-                            "state": "failed",
-                            "last_end_at": utc_now_text(),
-                            "last_error": str(retry_exc),
-                            "consecutive_failures": consecutive_failures,
-                        },
-                    )
-                    notify_sync_problem(config, message_sync_failed(retry_exc))
-                except Exception as retry_exc:  # noqa: BLE001 - keep the scheduler alive after retry failures.
-                    consecutive_failures += 1
-                    eprint(f"Sync retry error: {retry_exc}")
-                    write_sync_status(
-                        config,
-                        {
-                            "state": "failed",
-                            "last_end_at": utc_now_text(),
-                            "last_error": str(retry_exc),
-                            "consecutive_failures": consecutive_failures,
-                        },
-                    )
-                    notify_sync_problem(config, message_sync_failed(retry_exc))
-        except SystemExit as exc:
-            consecutive_failures += 1
-            eprint(f"Sync loop error: {exc}")
-            write_sync_status(
-                config,
-                {
-                    "state": "failed",
-                    "last_end_at": utc_now_text(),
-                    "last_error": str(exc),
-                    "consecutive_failures": consecutive_failures,
-                },
-            )
-            notify_sync_problem(config, message_sync_failed(exc))
-        except Exception as exc:  # noqa: BLE001 - a scheduler should log and keep running.
-            consecutive_failures += 1
-            eprint(f"Sync loop error: {exc}")
-            write_sync_status(
-                config,
-                {
-                    "state": "failed",
-                    "last_end_at": utc_now_text(),
-                    "last_error": str(exc),
-                    "consecutive_failures": consecutive_failures,
-                },
-            )
-            notify_sync_problem(config, message_sync_failed(exc))
-        print(f"[{utc_now_text()}] sync end", flush=True)
+            print("\n" + tr(
+                f"To apply: ltb approvals apply {result['destructive_fingerprint']}",
+                f"如需执行：ltb approvals apply {result['destructive_fingerprint']}",
+            ))
+        elif action == "apply":
+            print(tr("Applied the reviewed changes.", "已应用你确认过的更改。"))
+        else:
+            print(tr("Held. Everything else keeps syncing.", "已暂缓，其余改动继续同步。"))
+
+    handlers: dict[str, Callable[[], dict[str, Any]]] = {
+        "show": show,
+        "apply": lambda: locked(apply),
+        "hold": hold,
+    }
+    run_cli_command(args, handlers[action], human)
+
+
+# pause, resume, sync-now ---------------------------------------------------
+
+
+def cmd_pause(args: argparse.Namespace) -> None:
+    def handler() -> dict[str, Any]:
+        config = load_cli_config(args)
+        touch_private_file(pause_flag_path(config), "user")
+        touch_private_file(sync_now_path(config))
+        return {"paused": True, "loop_running": background_loop_running(config)}
+
+    run_cli_command(args, handler, lambda result: print(tr("Sync paused.", "同步已暂停。")))
+
+
+def cmd_resume(args: argparse.Namespace) -> None:
+    def handler() -> dict[str, Any]:
+        config = load_cli_config(args)
+        with contextlib.suppress(FileNotFoundError):
+            pause_flag_path(config).unlink()
+        touch_private_file(sync_now_path(config))
+        return {"paused": False, "loop_running": background_loop_running(config)}
+
+    run_cli_command(args, handler, lambda result: print(tr("Sync resumed.", "同步已恢复。")))
+
+
+def cmd_sync_now(args: argparse.Namespace) -> None:
+    def handler() -> dict[str, Any]:
+        config = load_cli_config(args)
+        touch_private_file(sync_now_path(config))
+        return {"requested": True, "loop_running": background_loop_running(config), "paused": sync_paused(config)}
+
+    def human(result: dict[str, Any]) -> None:
+        if result["loop_running"]:
+            print(tr("A sync will start within a few seconds.", "几秒内将开始同步。"))
+        else:
+            print(tr(
+                "Background sync is not running; open Local Tasks Bridge, or run `ltb sync`.",
+                "后台同步没有运行；请打开 Local Tasks Bridge，或运行 `ltb sync`。",
+            ))
+
+    run_cli_command(args, handler, human)
+
+
+# doctor --------------------------------------------------------------------
+
+
+def doctor_checks(config: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    snapshot = collect_management_snapshot(config)
+    client = snapshot["oauth_client"]
+    python_ok = sys.version_info >= (3, 9)
+    helper_kind = ""
+    with contextlib.suppress(RemindersUnavailable):
+        helper_kind = "script" if resolve_reminders_helper(config, "export").suffix == ".swift" else "compiled"
+    checks = [
+        {"id": "config", "ok": snapshot["config_exists"], "label": tr("Configuration", "配置")},
+        {
+            "id": "python",
+            "ok": python_ok,
+            "label": tr("Python ≥ 3.9", "Python ≥ 3.9"),
+            "detail": ".".join(str(part) for part in sys.version_info[:3]),
+        },
+        {
+            "id": "reminders_helpers",
+            "ok": snapshot["helpers_ready"],
+            "label": tr("Reminders helpers", "提醒事项辅助程序"),
+            "detail": helper_kind,
+        },
+        {
+            "id": "oauth_client",
+            "ok": client["active"] != "missing",
+            "label": tr("Google OAuth client", "Google OAuth 客户端"),
+            "detail": client["active"],
+        },
+        {"id": "google_token", "ok": snapshot["auth_material_ready"], "label": tr("Google sign-in", "Google 登录")},
+        {
+            "id": "background_loop",
+            "ok": bool(snapshot["agent_loaded"]),
+            "label": tr("Background sync running", "后台同步运行中"),
+        },
+        {
+            "id": "login_item",
+            "ok": snapshot["launch_agent_installed"],
+            "label": tr("Starts at login", "登录时启动"),
+        },
+        {"id": "not_paused", "ok": not snapshot["paused"], "label": tr("Not paused", "未暂停")},
+    ]
+    return checks, snapshot
+
+
+def cmd_doctor(args: argparse.Namespace) -> None:
+    if json_mode(args):
+        def handler() -> dict[str, Any]:
+            config = load_cli_config(args)
+            checks, snapshot = doctor_checks(config)
+            condition, headline, action = management_condition(snapshot)
+            result: dict[str, Any] = {
+                "version": __version__,
+                "checks": checks,
+                "condition": condition,
+                "headline": headline,
+                "next_step": action,
+                "state": snapshot["status_state"],
+                "last_success_at": snapshot["last_success_at"],
+                "consecutive_failures": snapshot["failure_count"],
+                "last_error_recorded": bool(local_status_snapshot(config)[1].get("last_error")),
+                "pending_destructive_counts": snapshot["pending_destructive_counts"],
+            }
+            if getattr(args, "online", False) is True:
+                online = check_google_connection(config)
+                result["online"] = {
+                    "state": online["state"],
+                    "tasklist_count": int(online.get("tasklist_count") or 0),
+                    "message": online.get("message") or "",
+                }
+            return result
+
+        run_cli_command(args, handler)
+        return
+
+    try:
+        config = load_config(args)
+    except (OSError, json.JSONDecodeError, SystemExit, TypeError, ValueError):
+        print(tr("Local prerequisites:", "本机前置条件："))
+        print(tr("  Configuration: invalid", "  配置：无效"))
+        print(tr("Online Google checks: skipped (local read-only mode)", "在线 Google 检查：已跳过（本地只读模式）"))
+        print(tr(
+            "Next step: Repair the private config (or rerun the setup assistant), then run doctor again.",
+            "下一步：修复私有配置（或重新运行设置向导），然后再运行 doctor。",
+        ))
+        return
+    apply_network_config(config)
+
+    checks, snapshot = doctor_checks(config)
+    ok_text, missing_text = tr("ok", "正常"), tr("missing", "缺失")
+    print(tr(f"{PRODUCT_NAME} {__version__}", f"{PRODUCT_NAME} {__version__}"))
+    print(tr("Local prerequisites:", "本机前置条件："))
+    for check in checks:
+        detail = f" ({check['detail']})" if check.get("detail") else ""
+        print(f"  {check['label']}: {ok_text if check['ok'] else missing_text}{detail}")
+    agent_loaded = launch_agent_loaded()
+    if agent_loaded is None:
+        print(tr("  Login item loaded: unavailable here", "  登录项已加载：此环境无法确认"))
+    else:
+        print(tr("  Login item loaded: ", "  登录项已加载：") + (ok_text if agent_loaded else tr("not loaded", "未加载")))
+
+    status_result, status = local_status_snapshot(config)
+    raw_state = str(status.get("state") or "unknown")
+    status_state = raw_state if raw_state in KNOWN_STATUS_STATES else "unknown"
+    print(tr("Local sync status:", "本机同步状态："))
+    print(tr(f"  Status file: {status_result}", f"  状态文件：{status_result}"))
+    if status_result == "available":
+        print(tr(f"  State: {status_state}", f"  状态：{status_state}"))
+        print(tr(f"  Updated: {safe_status_time(status.get('updated_at'))}", f"  更新时间：{safe_status_time(status.get('updated_at'))}"))
+        print(tr(
+            f"  Last successful sync: {safe_status_time(status.get('last_success_at'))}",
+            f"  最近成功同步：{safe_status_time(status.get('last_success_at'))}",
+        ))
         try:
-            wait_for_next_cycle(interval, approvals, cycle_started_at=cycle_started_at)
-        except KeyboardInterrupt:
-            approvals.close()
-            print("Stopping sync loop.", flush=True)
-            return
+            failure_count = max(0, int(status.get("consecutive_failures") or 0))
+        except (TypeError, ValueError):
+            failure_count = 0
+        print(tr(f"  Consecutive failures: {failure_count}", f"  连续失败次数：{failure_count}"))
+        pending = pending_destructive_counts(status)
+        if pending:
+            print(
+                tr("  Pending destructive changes: ", "  待确认的删除/完成：")
+                + ", ".join(f"{key}={count}" for key, count in pending.items())
+            )
+        if status.get("last_error"):
+            print(tr(
+                "  Last sync error: recorded; details hidden to protect credentials and local paths",
+                "  最近一次同步错误：已记录；为保护凭据和本地路径，此处不显示详情",
+            ))
+
+    if getattr(args, "online", False) is True:
+        run_online_doctor_checks(config)
+    else:
+        print(tr("Online Google checks: skipped (local read-only mode)", "在线 Google 检查：已跳过（本地只读模式）"))
+        print(tr(
+            "  Use doctor --online only when a Google token refresh is acceptable.",
+            "  只有在允许刷新 Google 令牌时才使用 doctor --online。",
+        ))
+
+    next_step = doctor_next_step(
+        config_exists=snapshot["config_exists"],
+        swift_ready=snapshot["swift_ready"],
+        helpers_ready=snapshot["helpers_ready"],
+        runtime_ready=snapshot["runtime_ready"],
+        auth_material_ready=snapshot["auth_material_ready"],
+        launch_agent_installed=snapshot["launch_agent_installed"],
+        agent_loaded=snapshot["agent_loaded"],
+        status_result=status_result,
+        status_state="paused" if snapshot["paused"] and status_state not in {
+            "account_binding_required", "auth_required", "auth_timeout", "awaiting_mutation_approval",
+            "blocked_mutation_plan",
+        } else status_state,
+    )
+    print(tr(f"Next step: {next_step}", f"下一步：{next_step}"))
+
+
+# migrate -------------------------------------------------------------------
+
+
+MIGRATED_SETTING_KEYS = (
+    "target_service",
+    "reminders_source",
+    "include_lists",
+    "list_policies",
+    "bidirectional",
+    "delete_stale",
+    "allow_empty_source_delete",
+    "conflict_policy",
+    "tasks_mirror_lists",
+    "tasks_mirror_empty_lists",
+    "tasks_create_missing_lists",
+    "tasks_complete_stale",
+    "tasks_import_unsynced",
+    "tasks_sync_undated",
+    "tasks_list_id",
+    "tasks_list_title",
+    "calendar_id",
+    "lookahead_days",
+    "sync_interval_seconds",
+    "max_destructive_changes",
+    "max_destructive_ratio",
+    "destructive_approval_ttl_seconds",
+    "auto_approve_destructive_loops",
+    "mutation_approval_prompt",
+    "mutation_approval_prompt_repeat_seconds",
+    "macos_notifications",
+    "verify_title_due_after_sync",
+    "verify_title_due_retry_attempts",
+    "verify_title_due_retry_delay_seconds",
+    "auto_reauth_browser",
+    "auto_reauth_timeout_seconds",
+    "manual_oauth_browser",
+    "use_adc",
+    "adc_credentials_path",
+    "prefix_list",
+    "transparency",
+    "default_duration_minutes",
+    "google_popup_minutes",
+)
+MIGRATED_FILES = (
+    ("credentials", "credentials_path", "credentials.json"),
+    ("token", "token_path", "token.json"),
+    ("state", "state_path", "state.json"),
+    ("status", "status_path", "status.json"),
+)
+
+
+def legacy_launch_agent_proxy(path: Path) -> str:
+    try:
+        payload = plistlib.loads(path.read_bytes())
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        return ""
+    environment = payload.get("EnvironmentVariables") if isinstance(payload, dict) else None
+    if not isinstance(environment, dict):
+        return ""
+    for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+        value = str(environment.get(key) or "").strip()
+        if value:
+            with contextlib.suppress(SystemExit):
+                return normalize_proxy_setting(value)
+    return ""
+
+
+def stop_legacy_launch_agent(dry_run: bool, backup_dir: Path | None) -> dict[str, Any]:
+    plist = legacy_launch_agent_path()
+    result: dict[str, Any] = {"legacy_agent_found": plist.is_file(), "legacy_agent_stopped": False, "legacy_agent_plist_backup": ""}
+    if dry_run:
+        return result
+    if launchctl_available():
+        completed = subprocess.run(
+            ["launchctl", "bootout", f"gui/{os.getuid()}/{LEGACY_LAUNCH_AGENT_LABEL}"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=30,
+        )
+        result["legacy_agent_stopped"] = completed.returncode == 0
+    if plist.is_file() and backup_dir is not None:
+        destination = backup_dir / plist.name
+        shutil.move(str(plist), destination)
+        os.chmod(destination, 0o600)
+        result["legacy_agent_plist_backup"] = str(destination)
+    return result
+
+
+def cmd_migrate(args: argparse.Namespace) -> None:
+    def handler() -> dict[str, Any]:
+        target_path = expand_path(args.config)
+        dry_run = getattr(args, "dry_run", False) is True
+        if target_path.exists() and not getattr(args, "force", False) is True:
+            raise CommandError(
+                "config_invalid",
+                tr(
+                    f"{target_path} already exists; this Mac is already set up. Use --force to import anyway.",
+                    f"{target_path} 已存在，说明这台 Mac 已经完成设置。如仍要导入，请加 --force。",
+                ),
+            )
+        explicit = text_path_argument(args, "source")
+        candidates = [Path(explicit).expanduser()] if explicit else legacy_config_paths()
+        source = next((candidate for candidate in candidates if candidate.is_file()), None)
+        if source is None:
+            raise CommandError("config_invalid", tr("No earlier installation was found.", "没有找到旧的安装。"))
+        legacy = read_config_document(source)
+        if not dry_run and not json_mode(args) and getattr(args, "yes", False) is not True:
+            if not management_confirm(
+                args,
+                tr(
+                    f"Import {source} and stop the old background job?",
+                    f"要导入 {source} 并停止旧的后台任务吗？",
+                ),
+            ):
+                raise CommandError("failed", tr("Cancelled; nothing was changed.", "已取消，没有做任何更改。"))
+
+        def legacy_file(key: str, default_name: str) -> Path:
+            value = str(legacy.get(key) or "").strip()
+            return Path(value).expanduser() if value else source.parent / default_name
+
+        document = product_default_config()
+        for key in MIGRATED_SETTING_KEYS:
+            if key in legacy:
+                document[key] = legacy[key]
+        document["config_version"] = CONFIG_VERSION
+        document["oauth_client"] = "auto"
+        document["setup_completed_at"] = utc_now_text()
+        document.pop("reminders_exporter_path", None)
+        document.pop("reminders_apply_path", None)
+        if not document.get("proxy"):
+            document["proxy"] = legacy_launch_agent_proxy(legacy_launch_agent_path())
+
+        target_dir = target_path.parent
+        planned = []
+        for name, key, default_name in MIGRATED_FILES:
+            origin = legacy_file(key, default_name)
+            if origin.is_file() and not origin.is_symlink():
+                planned.append((name, origin, target_dir / default_name))
+        if not any(name == "token" for name, _origin, _target in planned):
+            print(tr(
+                "Note: no Google token was found; you will be asked to sign in again.",
+                "提示：没有找到 Google 令牌，之后需要重新登录。",
+            ))
+
+        result: dict[str, Any] = {
+            "dry_run": dry_run,
+            "migrated_from": str(source),
+            "config_path": str(target_path),
+            "copied": [name for name, _origin, _target in planned],
+        }
+        if dry_run:
+            result.update(stop_legacy_launch_agent(True, None))
+            return result
+
+        target_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(target_dir, 0o700)
+        backup_dir = target_dir / "backups" / f"{dt.datetime.now().astimezone().strftime('%Y%m%d-%H%M%S')}-migrate"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(backup_dir.parent, 0o700)
+        os.chmod(backup_dir, 0o700)
+        # Stop the old scheduler before copying, so its last cycle cannot
+        # write the old state after the copy was taken.
+        result.update(stop_legacy_launch_agent(False, backup_dir))
+        for _name, origin, destination in planned:
+            if destination.exists():
+                shutil.copy2(destination, backup_dir / f"replaced-{destination.name}")
+            shutil.copy2(origin, destination)
+            os.chmod(destination, 0o600)
+        save_config_document(target_path, document, args)
+        result["legacy_tmp_logs_removed"] = retire_legacy_tmp_logs()
+        return result
+
+    def human(result: dict[str, Any]) -> None:
+        verb = tr("Would import", "将导入") if result["dry_run"] else tr("Imported", "已导入")
+        print(f"{verb}: {result['migrated_from']} → {result['config_path']}")
+        print(tr(f"Files: {', '.join(result['copied']) or 'none'}", f"文件：{', '.join(result['copied']) or '无'}"))
+        if result.get("legacy_agent_stopped"):
+            print(tr("Stopped the old background job.", "已停止旧的后台任务。"))
+
+    run_cli_command(args, handler, human)
+
+
+# login item (LaunchAgent) --------------------------------------------------
+
+
+def app_executable(app_path: Path) -> Path:
+    return app_path / "Contents" / "MacOS" / "LocalTasksBridge"
+
+
+def launch_agent_document(app_path: Path) -> dict[str, Any]:
+    app_log = log_dir() / "app.log"
+    return {
+        "Label": LAUNCH_AGENT_LABEL,
+        "ProgramArguments": [str(app_executable(app_path)), "--background"],
+        "RunAtLoad": True,
+        "KeepAlive": {"SuccessfulExit": False},
+        "LimitLoadToSessionType": "Aqua",
+        "ProcessType": "Interactive",
+        "ThrottleInterval": 30,
+        "StandardOutPath": str(app_log),
+        "StandardErrorPath": str(app_log),
+    }
+
+
+def agent_status_payload() -> dict[str, Any]:
+    path = launch_agent_path()
+    app = app_bundle_from_launch_agent(path)
+    return {
+        "installed": path.is_file(),
+        "loaded": launch_agent_loaded(),
+        "label": LAUNCH_AGENT_LABEL,
+        "plist": str(path),
+        "program": str(app_executable(app)) if app else "",
+    }
+
+
+def install_launch_agent(app_path: Path, *, load: bool = True) -> dict[str, Any]:
+    app_path = app_path.expanduser().resolve()
+    executable = app_executable(app_path)
+    if app_path.suffix != ".app" or not os.access(executable, os.X_OK):
+        raise CommandError("failed", tr(f"Not a Local Tasks Bridge app bundle: {app_path}", f"不是 Local Tasks Bridge 应用包：{app_path}"))
+    prepare_private_log(log_dir() / "app.log", DEFAULT_LOG_MAX_BYTES)
+    path = launch_agent_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    candidate = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    candidate.write_bytes(plistlib.dumps(launch_agent_document(app_path)))
+    os.chmod(candidate, 0o644)
+    os.replace(candidate, path)
+    loaded = launch_agent_loaded()
+    if load and loaded is False:
+        # Only when nothing is loaded yet: an app started by this job must
+        # never boot itself out by reinstalling its own login item.
+        completed = subprocess.run(
+            ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(path)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        if completed.returncode != 0:
+            eprint(f"launchctl bootstrap failed: {completed.stderr.strip()}")
+    retire_legacy_tmp_logs()
+    return agent_status_payload()
+
+
+def uninstall_launch_agent(*, bootout: bool) -> dict[str, Any]:
+    path = launch_agent_path()
+    removed = False
+    if bootout and launch_agent_loaded():
+        subprocess.run(
+            ["launchctl", "bootout", f"gui/{os.getuid()}/{LAUNCH_AGENT_LABEL}"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=30,
+        )
+    if path.is_file() or path.is_symlink():
+        path.unlink()
+        removed = True
+    return {**agent_status_payload(), "removed": removed}
+
+
+def called_from_app() -> bool:
+    return bool(str(os.environ.get("LTB_APP_BUNDLE") or "").strip())
+
+
+def cmd_agent(args: argparse.Namespace) -> None:
+    action = str(getattr(args, "agent_action", "") or "status")
+
+    def handler() -> dict[str, Any]:
+        if action == "install":
+            app = text_path_argument(args, "app") or os.environ.get("LTB_APP_BUNDLE") or ""
+            if not app:
+                bundle = app_bundle_of_engine()
+                app = str(bundle) if bundle else ""
+            if not app:
+                raise CommandError("failed", tr("Pass --app with the path of Local Tasks Bridge.app.", "请用 --app 指定 Local Tasks Bridge.app 的路径。"))
+            return install_launch_agent(Path(app), load=getattr(args, "no_load", False) is not True)
+        if action == "uninstall":
+            bootout = getattr(args, "bootout", False) is True or not called_from_app()
+            return uninstall_launch_agent(bootout=bootout)
+        return agent_status_payload()
+
+    def human(result: dict[str, Any]) -> None:
+        print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True))
+
+    run_cli_command(args, handler, human)
+
+
+# uninstall -----------------------------------------------------------------
+
+
+def safe_private_directory(path: Path, expected_name: str) -> bool:
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return False
+    home = Path.home().resolve()
+    return resolved.name == expected_name and resolved != home and home in resolved.parents
+
+
+def cmd_uninstall(args: argparse.Namespace) -> None:
+    def handler() -> dict[str, Any]:
+        config = load_cli_config(args)
+        if getattr(args, "yes", False) is not True:
+            prompt = tr(
+                "Remove the login item" + (", revoke Google access" if args.revoke else "")
+                + (", and delete local settings, sync state and logs" if args.delete_data else "") + "?",
+                "要移除登录项" + ("、撤销 Google 授权" if args.revoke else "")
+                + ("，并删除本地设置、同步状态和日志" if args.delete_data else "") + "吗？",
+            )
+            if json_mode(args) or not management_confirm(args, prompt):
+                raise CommandError("failed", tr("Uninstall needs confirmation (--yes).", "卸载需要确认（--yes）。"))
+        result: dict[str, Any] = {"agent": uninstall_launch_agent(bootout=not called_from_app())}
+        token_path = expand_path(config["token_path"])
+        result["revoked"] = False
+        if getattr(args, "revoke", False) is True and token_path.is_file():
+            with contextlib.suppress(OSError, json.JSONDecodeError):
+                result["revoked"] = revoke_google_token(read_json(token_path))
+        result["data_deleted"] = False
+        result["logs_deleted"] = False
+        if getattr(args, "delete_data", False) is True:
+            data_dir = control_dir(config)
+            if data_dir.is_dir() and safe_private_directory(data_dir, APP_NAME):
+                shutil.rmtree(data_dir)
+                result["data_deleted"] = True
+            logs = log_dir()
+            if logs.is_dir() and safe_private_directory(logs, "LocalTasksBridge"):
+                shutil.rmtree(logs)
+                result["logs_deleted"] = True
+        return result
+
+    def human(result: dict[str, Any]) -> None:
+        print(tr("Local Tasks Bridge was removed from login items.", "已从登录项中移除 Local Tasks Bridge。"))
+        if result["revoked"]:
+            print(tr("Google access was revoked.", "已撤销 Google 授权。"))
+        if result["data_deleted"]:
+            print(tr("Local settings and sync state were deleted.", "已删除本地设置和同步状态。"))
+
+    run_cli_command(args, handler, human)
+
+
+def add_json_option(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--json", action="store_true", help="Print one JSON object (for scripts and the app).")
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Sync Apple Reminders to Google Tasks or Google Calendar.")
+    parser = argparse.ArgumentParser(
+        prog="ltb",
+        description=f"{PRODUCT_NAME} {__version__}: sync Apple Reminders with Google Tasks on this Mac.",
+    )
     parser.add_argument(
         "--config",
         default=str(default_config_dir() / "config.json"),
-        help="Path to config JSON. Default: ~/.config/icloud-reminders-google-sync/config.json",
+        help="Path to config JSON. Default: ~/.config/local-tasks-bridge/config.json",
     )
+    parser.add_argument("--language", choices=sorted(LANGUAGE_PREFERENCES), help="Message language (default: auto).")
+    parser.add_argument("--version", action="version", version=f"{PRODUCT_NAME} {__version__}")
 
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
-    init_parser = subparsers.add_parser("init-config", help="Write a starter config file.")
-    init_parser.add_argument("--force", action="store_true", help="Overwrite an existing config.")
-    init_parser.set_defaults(func=cmd_init_config)
+    version_parser = subparsers.add_parser("version", help="Show the version.")
+    add_json_option(version_parser)
+    version_parser.set_defaults(func=cmd_version)
 
-    auth_parser = subparsers.add_parser("auth", help="Authorize Google API access.")
+    status_parser = subparsers.add_parser("status", help="Show the sync status (local, read-only).")
+    add_json_option(status_parser)
+    status_parser.set_defaults(func=cmd_status)
+
+    lists_parser = subparsers.add_parser("lists", help="List Reminders lists (and Google task lists with --google).")
+    lists_parser.add_argument("--google", action="store_true", help="Also read Google Tasks lists (needs sign-in).")
+    add_json_option(lists_parser)
+    lists_parser.set_defaults(func=cmd_lists)
+
+    config_parser = subparsers.add_parser("config", help="Show, create, or change settings.")
+    config_actions = config_parser.add_subparsers(dest="config_action", required=True, metavar="ACTION")
+    for name, help_text in (
+        ("show", "Show the user-facing settings."),
+        ("init", "Create config.json with the product defaults."),
+        ("merge", "Merge a JSON object from stdin into config.json after validating it."),
+        ("validate", "Check config.json."),
+    ):
+        action_parser = config_actions.add_parser(name, help=help_text)
+        add_json_option(action_parser)
+        if name == "init":
+            action_parser.add_argument("--force", action="store_true", help="Replace an existing config (after a backup).")
+    config_parser.set_defaults(func=cmd_config)
+
+    client_parser = subparsers.add_parser("client", help="Manage the Google OAuth client.")
+    client_actions = client_parser.add_subparsers(dest="client_action", required=True, metavar="ACTION")
+    import_parser = client_actions.add_parser("import", help="Import your own Google Cloud \"Desktop app\" client JSON.")
+    import_parser.add_argument("path")
+    add_json_option(import_parser)
+    client_status_parser = client_actions.add_parser("status", help="Show which OAuth client sign-in uses.")
+    add_json_option(client_status_parser)
+    client_parser.set_defaults(func=cmd_client)
+
+    auth_parser = subparsers.add_parser("auth", help="Sign in to Google in the browser.")
     auth_parser.add_argument("--credentials-path")
+    auth_parser.add_argument("--no-browser", action="store_true", help="Print the sign-in URL instead of opening it.")
+    add_json_option(auth_parser)
     auth_parser.set_defaults(func=cmd_auth)
+
+    account_parser = subparsers.add_parser("account", help="Check the Google account and the Tasks API (network).")
+    add_json_option(account_parser)
+    account_parser.set_defaults(func=cmd_account)
+
+    signout_parser = subparsers.add_parser("signout", help="Forget the Google sign-in on this Mac.")
+    signout_parser.add_argument("--revoke", action="store_true", help="Also revoke the token at Google.")
+    add_json_option(signout_parser)
+    signout_parser.set_defaults(func=cmd_signout)
 
     gcloud_login_parser = subparsers.add_parser(
         "gcloud-login",
-        help="Authorize Google API access through gcloud Application Default Credentials.",
+        help="(Advanced) Authorize through gcloud Application Default Credentials.",
     )
     gcloud_login_parser.add_argument("--adc-credentials-path")
     gcloud_login_parser.set_defaults(func=cmd_gcloud_login)
+
+    init_parser = subparsers.add_parser("init-config", help="Write a starter config file (same as `config init`).")
+    init_parser.add_argument("--force", action="store_true", help="Overwrite an existing config.")
+    init_parser.set_defaults(func=cmd_init_config)
 
     export_parser = subparsers.add_parser("export", help="Print Apple Reminders as JSON.")
     add_common_sync_options(export_parser)
@@ -7159,25 +8670,26 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor_parser = subparsers.add_parser(
         "doctor",
-        help="Inspect local prerequisites, LaunchAgent state, and the last sync result without changing runtime state.",
+        help="Check prerequisites and the last sync result without changing anything.",
     )
     doctor_parser.add_argument(
         "--online",
         action="store_true",
         help="Also refresh Google auth and check the API; this can update the local OAuth token.",
     )
+    add_json_option(doctor_parser)
     doctor_parser.set_defaults(func=cmd_doctor)
 
     manage_parser = subparsers.add_parser(
         "manage",
-        help="Diagnose and safely recover the installed Google Tasks sync from one guided interface.",
+        help="Diagnose and safely recover the sync from one guided Terminal menu.",
     )
     manage_parser.add_argument(
         "action",
         nargs="?",
         choices=["menu", "status", "check", "reconnect", "restart", "approve"],
         default="menu",
-        help="Management action. The default opens an interactive Korean menu.",
+        help="Management action. The default opens the interactive menu.",
     )
     manage_parser.add_argument(
         "--yes",
@@ -7185,6 +8697,56 @@ def build_parser() -> argparse.ArgumentParser:
         help="Accept management confirmations. Intended for controlled testing and recovery only.",
     )
     manage_parser.set_defaults(func=cmd_manage)
+
+    approvals_parser = subparsers.add_parser("approvals", help="Review a large batch of deletions/completions.")
+    approval_actions = approvals_parser.add_subparsers(dest="approvals_action", required=True, metavar="ACTION")
+    show_parser = approval_actions.add_parser("show", help="Show what needs approval (computes a preview).")
+    add_json_option(show_parser)
+    for name, help_text in (
+        ("apply", "Apply exactly the reviewed set of deletions/completions."),
+        ("hold", "Keep them on hold; everything else keeps syncing."),
+    ):
+        action_parser = approval_actions.add_parser(name, help=help_text)
+        action_parser.add_argument("fingerprint", help="destructive_fingerprint from `approvals show`")
+        add_json_option(action_parser)
+    approvals_parser.set_defaults(func=cmd_approvals)
+
+    for name, func, help_text in (
+        ("pause", cmd_pause, "Pause background sync."),
+        ("resume", cmd_resume, "Resume background sync."),
+        ("sync-now", cmd_sync_now, "Ask the background sync to run within a few seconds."),
+    ):
+        control_parser = subparsers.add_parser(name, help=help_text)
+        add_json_option(control_parser)
+        control_parser.set_defaults(func=func)
+
+    migrate_parser = subparsers.add_parser("migrate", help="Import an earlier installation (trial or upstream).")
+    migrate_parser.add_argument("--from", dest="source", help="Path of the old config.json to import.")
+    migrate_parser.add_argument("--dry-run", action="store_true")
+    migrate_parser.add_argument("--force", action="store_true", help="Import even if this Mac is already set up.")
+    migrate_parser.add_argument("--yes", action="store_true")
+    add_json_option(migrate_parser)
+    migrate_parser.set_defaults(func=cmd_migrate)
+
+    agent_parser = subparsers.add_parser("agent", help="Manage the start-at-login item.")
+    agent_actions = agent_parser.add_subparsers(dest="agent_action", required=True, metavar="ACTION")
+    agent_install = agent_actions.add_parser("install", help="Start Local Tasks Bridge at login.")
+    agent_install.add_argument("--app", help="Path of Local Tasks Bridge.app (default: the app running this engine).")
+    agent_install.add_argument("--no-load", action="store_true", help="Write the login item without starting it now.")
+    add_json_option(agent_install)
+    agent_uninstall = agent_actions.add_parser("uninstall", help="Stop starting at login.")
+    agent_uninstall.add_argument("--bootout", action="store_true", help="Also stop the running job now.")
+    add_json_option(agent_uninstall)
+    agent_status = agent_actions.add_parser("status", help="Show the login item.")
+    add_json_option(agent_status)
+    agent_parser.set_defaults(func=cmd_agent)
+
+    uninstall_parser = subparsers.add_parser("uninstall", help="Remove the login item and, optionally, all local data.")
+    uninstall_parser.add_argument("--revoke", action="store_true", help="Revoke the Google sign-in at Google.")
+    uninstall_parser.add_argument("--delete-data", action="store_true", help="Delete settings, sync state and logs.")
+    uninstall_parser.add_argument("--yes", action="store_true")
+    add_json_option(uninstall_parser)
+    uninstall_parser.set_defaults(func=cmd_uninstall)
 
     sync_parser = subparsers.add_parser("sync", help="Sync Apple Reminders to Google Tasks or Google Calendar.")
     add_common_sync_options(sync_parser)
@@ -7235,6 +8797,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Add a Google popup reminder this many minutes before the event. May be repeated.",
     )
     sync_parser.add_argument("--dry-run", action="store_true")
+    add_json_option(sync_parser)
     sync_parser.set_defaults(func=cmd_sync)
 
     loop_parser = subparsers.add_parser("run-loop", help="Run sync repeatedly in the foreground.")
@@ -7285,6 +8848,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="Add a Google popup reminder this many minutes before the event. May be repeated.",
     )
+    loop_parser.add_argument("--log-file", help="Write all output to this private, size-rotated log file.")
+    loop_parser.add_argument("--log-max-bytes", type=int, default=DEFAULT_LOG_MAX_BYTES)
     loop_parser.set_defaults(func=cmd_run_loop)
 
     return parser

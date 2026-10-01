@@ -20,6 +20,22 @@ sys.path.insert(0, str(ROOT / "engine"))
 import local_tasks_bridge as sync  # noqa: E402
 
 
+_TEST_HOME = tempfile.TemporaryDirectory(prefix="ltb-tests-")
+# Keep every default path inside a throwaway directory: no test may touch the
+# developer's real config, logs, or LaunchAgents, or call launchctl.
+os.environ.update(
+    {
+        "XDG_CONFIG_HOME": str(Path(_TEST_HOME.name) / "config"),
+        "LTB_LOG_DIR": str(Path(_TEST_HOME.name) / "logs"),
+        "LTB_LAUNCH_AGENTS_DIR": str(Path(_TEST_HOME.name) / "LaunchAgents"),
+        "LTB_NO_LAUNCHCTL": "1",
+        "LTB_LANG": "en",
+    }
+)
+for _name in ("LTB_EVENT_STREAM", "LTB_BUNDLED_OAUTH_CLIENT", "LTB_REMINDERS_EXPORTER", "LTB_REMINDERS_APPLY"):
+    os.environ.pop(_name, None)
+
+
 REAL_LAUNCH_MUTATION_APPROVAL_DIALOG = sync.launch_mutation_approval_dialog
 REAL_SEND_MACOS_NOTIFICATION = sync.send_macos_notification
 _SCREEN_GUARDS = [
@@ -2010,7 +2026,7 @@ class BlockedPlanAutoApprovalTests(unittest.TestCase):
             ) as run, mock.patch.object(sync, "harden_runtime_log_modes"), mock.patch.object(
                 sync, "notify_sync_problem",
             ) as notify, mock.patch.object(sync, "notify_sync_ok"), mock.patch.object(
-                sync.time, "sleep", side_effect=[None, None, None, None, KeyboardInterrupt],
+                sync, "wait_for_next_cycle", side_effect=[None, None, None, None, KeyboardInterrupt],
             ), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 sync.cmd_run_loop(mock.Mock())
 

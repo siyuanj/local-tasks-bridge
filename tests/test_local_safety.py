@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import json
 import tempfile
 import unittest
@@ -15,6 +16,22 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "engine"))
 
 import local_tasks_bridge as sync  # noqa: E402
+
+
+_TEST_HOME = tempfile.TemporaryDirectory(prefix="ltb-tests-")
+# Keep every default path inside a throwaway directory: no test may touch the
+# developer's real config, logs, or LaunchAgents, or call launchctl.
+os.environ.update(
+    {
+        "XDG_CONFIG_HOME": str(Path(_TEST_HOME.name) / "config"),
+        "LTB_LOG_DIR": str(Path(_TEST_HOME.name) / "logs"),
+        "LTB_LAUNCH_AGENTS_DIR": str(Path(_TEST_HOME.name) / "LaunchAgents"),
+        "LTB_NO_LAUNCHCTL": "1",
+        "LTB_LANG": "en",
+    }
+)
+for _name in ("LTB_EVENT_STREAM", "LTB_BUNDLED_OAUTH_CLIENT", "LTB_REMINDERS_EXPORTER", "LTB_REMINDERS_APPLY"):
+    os.environ.pop(_name, None)
 
 
 class LocalSafetyTests(unittest.TestCase):

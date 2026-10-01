@@ -356,6 +356,14 @@ class OAuthCallbackTimeout(RuntimeError):
     pass
 
 
+class RemindersUnavailable(SystemExit):
+    """The EventKit helper could not read or write Apple Reminders."""
+
+
+class OAuthClientMissing(SystemExit):
+    """No usable Google OAuth client (neither the user's own nor a bundled one)."""
+
+
 def google_api_failure_summary(status: int) -> str:
     if status in (401, 403):
         action = "Reauthorize Google access and confirm the Tasks API permission."
@@ -1052,7 +1060,7 @@ def apply_network_config(config: dict[str, Any]) -> None:
 
 def load_credentials(path: Path) -> dict[str, str]:
     if not path.exists():
-        raise SystemExit(
+        raise OAuthClientMissing(
             tr(
                 f"Google OAuth client file not found: {path}\n"
                 "Create a Desktop app OAuth client in your Google Cloud project with the Google Tasks API "
@@ -1130,7 +1138,7 @@ def resolve_oauth_client(config: dict[str, Any]) -> tuple[str, dict[str, str]]:
     if bundled is not None:
         return "bundled", validate_oauth_client_document(read_json(bundled))
     if mode == "bundled":
-        raise SystemExit(
+        raise OAuthClientMissing(
             tr(
                 "This build does not include a shared Google OAuth client. Import your own Desktop app "
                 "client with `ltb client import <file>`; see docs/google-cloud-setup.md.",
@@ -1441,15 +1449,12 @@ def load_token(config: dict[str, Any]) -> dict[str, Any]:
     if candidates:
         return candidates[0]
 
-    token_path = expand_path(config["token_path"])
-    raise SystemExit(
-        "Google OAuth token not found.\n"
-        f"Local token: {token_path}\n"
-        f"gcloud ADC: {expand_path(config['adc_credentials_path'])}\n"
-        "Run either:\n"
-        f"  gcloud auth application-default login --scopes={GCLOUD_LOGIN_SCOPES}\n"
-        "or:\n"
-        "  python3 icloud_reminders_google_sync.py auth"
+    raise AuthenticationRequired(
+        tr(
+            "Not signed in to Google yet. Open Local Tasks Bridge and choose \"Sign In with Google\", "
+            "or run `ltb auth`.",
+            "尚未登录 Google。请打开 Local Tasks Bridge 并选择“使用 Google 登录”，或运行 `ltb auth`。",
+        )
     )
 
 
@@ -1462,16 +1467,11 @@ def load_fallback_token(config: dict[str, Any], failed_token: dict[str, Any]) ->
 
 
 def google_reauth_message(config: dict[str, Any]) -> str:
-    config_path = str(config.get("_config_path") or (default_config_dir() / "config.json"))
-    python_bin = sys.executable or "python3"
-    return (
-        "Google OAuth refresh token has expired or was revoked. "
-        "This cannot be repaired fully in the background.\n"
-        "Run this once from Terminal, complete the browser login, then the LaunchAgent will resume on its next cycle:\n"
-        f"  cd {PROJECT_DIR}\n"
-        f"  {python_bin} {Path(__file__).name} --config {config_path} gcloud-login\n"
-        "If gcloud is unavailable, use:\n"
-        f"  {python_bin} {Path(__file__).name} --config {config_path} auth"
+    return tr(
+        "Google sign-in has expired or was revoked, so sync is paused. Open Local Tasks Bridge from the "
+        "menu bar and choose \"Reconnect Google…\", or run `ltb auth`. Sync resumes on the next cycle.",
+        "Google 登录已过期或被撤销，同步已暂停。请在菜单栏打开 Local Tasks Bridge 并选择“重新连接 Google…”，"
+        "或运行 `ltb auth`。完成后会在下一轮自动恢复同步。",
     )
 
 
@@ -1486,7 +1486,8 @@ def refresh_token(config: dict[str, Any], token: dict[str, Any]) -> dict[str, An
             "client_secret": str(token.get("client_secret") or ""),
         }
     else:
-        credentials = load_credentials(expand_path(config["credentials_path"]))
+        # Tokens written before the client was recorded in token.json.
+        _mode, credentials = resolve_oauth_client(config)
 
     fields = {
         "client_id": credentials["client_id"],
@@ -1505,6 +1506,9 @@ def refresh_token(config: dict[str, Any], token: dict[str, Any]) -> dict[str, An
     if credentials.get("client_secret"):
         merged["client_secret"] = credentials["client_secret"]
     merged["_credential_source"] = str(token.get("_credential_source") or "local_oauth")
+    subject = google_account_subject(merged)
+    if subject:
+        merged["_account_subject"] = subject
     merged["created_at"] = int(time.time())
     merged["expires_at"] = int(time.time()) + int(merged.get("expires_in", 3600)) - 60
     if merged.get("_credential_source") != "gcloud_adc":
@@ -1796,12 +1800,45 @@ def google_credential_binding(token: dict[str, Any]) -> str:
     return sha256_text(f"google-oauth-refresh\n{refresh}")
 
 
+def google_subject_binding(subject: str) -> str:
+    return sha256_text(f"google-openid-sub\n{subject}")
+
+
+def google_account_binding(token: dict[str, Any]) -> tuple[int, str]:
+    """The Google half of the sync-state binding.
+
+    Version 2 hashes the Google account ID from the OpenID ID token, so signing
+    in again to the same account (which mints a new refresh token) keeps the
+    sync map. Tokens without an ID token fall back to version 1, which hashes
+    the refresh token itself.
+    """
+
+    subject = google_account_subject(token)
+    if subject:
+        return 2, google_subject_binding(subject)
+    return 1, google_credential_binding(token)
+
+
 def require_expected_google_credential_binding(config: dict[str, Any], token: dict[str, Any]) -> None:
     expected = str(config.get("_expected_google_credential_binding") or "")
-    if expected and google_credential_binding(token) != expected:
+    if not expected:
+        return
+    if int(config.get("_expected_google_binding_version") or 1) >= 2:
+        subject = google_account_subject(token)
+        actual = google_subject_binding(subject) if subject else ""
+    else:
+        actual = google_credential_binding(token)
+    if actual != expected:
         raise AccountBindingRequired(
             "Google OAuth credentials changed during fallback; refusing to reuse the existing sync state."
         )
+
+
+def expect_google_binding(config: dict[str, Any], binding: dict[str, Any]) -> None:
+    """Pin every later token use in this sync to the account the state belongs to."""
+
+    config["_expected_google_credential_binding"] = str(binding.get("google") or "")
+    config["_expected_google_binding_version"] = int(binding.get("version") or 1)
 
 
 def apple_account_binding(records: list[dict[str, Any]]) -> str:
@@ -1826,11 +1863,18 @@ def resolve_sync_account_binding(
     reminder_lists = run_reminders_lists_export(config)
     apple_records = [*reminder_lists, *reminders]
     token = load_token(config)
-    return {
-        "version": 1,
+    version, google = google_account_binding(token)
+    binding: dict[str, Any] = {
+        "version": version,
         "apple": apple_account_binding(apple_records),
-        "google": google_credential_binding(token),
+        "google": google,
     }
+    if version >= 2:
+        # Transient: lets a version-1 state bound to this exact credential be
+        # upgraded in place. Never persisted.
+        with contextlib.suppress(AuthenticationRequired):
+            binding["google_credential"] = google_credential_binding(token)
+    return binding
 
 
 def bind_or_validate_sync_state_accounts(
@@ -1838,7 +1882,7 @@ def bind_or_validate_sync_state_accounts(
     binding: dict[str, Any],
 ) -> None:
     normalized = {
-        "version": 1,
+        "version": max(1, int(binding.get("version") or 1)),
         "apple": str(binding.get("apple") or ""),
         "google": str(binding.get("google") or ""),
     }
@@ -1861,10 +1905,24 @@ def bind_or_validate_sync_state_accounts(
         "apple": str(existing.get("apple") or ""),
         "google": str(existing.get("google") or ""),
     }
-    if current != normalized:
-        raise AccountBindingRequired(
-            "Apple Reminders or Google OAuth account binding changed; refusing to reuse the existing sync state."
-        )
+    if current == normalized:
+        return
+    credential = str(binding.get("google_credential") or "")
+    if (
+        current["version"] == 1
+        and normalized["version"] >= 2
+        and current["apple"] == normalized["apple"]
+        and current["google"]
+        and credential
+        and secrets.compare_digest(current["google"], credential)
+    ):
+        # The state is bound to this exact refresh token, so it belongs to the
+        # same Google account; record the account identity instead.
+        state["account_binding"] = normalized
+        return
+    raise AccountBindingRequired(
+        "Apple Reminders or Google OAuth account binding changed; refusing to reuse the existing sync state."
+    )
 
 
 def run_reminders_export(config: dict[str, Any], completed_only: bool = False) -> list[dict[str, Any]]:
@@ -1883,47 +1941,103 @@ def run_reminders_export(config: dict[str, Any], completed_only: bool = False) -
         return run_reminders_sqlite_export(config, completed_only=completed_only)
 
 
-def run_reminders_eventkit_export(config: dict[str, Any], completed_only: bool = False) -> list[dict[str, Any]]:
-    exporter = expand_path(config["reminders_exporter_path"])
-    if not exporter.exists():
-        raise SystemExit(f"Reminders exporter not found: {exporter}")
-    if not shutil.which("swift"):
-        raise SystemExit("Swift is not installed or not on PATH. This sync requires macOS Swift/EventKit.")
+REMINDERS_HELPER_NAMES = {
+    "export": ("ltb-reminders-export", "RemindersExport.swift", "reminders_exporter_path", "LTB_REMINDERS_EXPORTER"),
+    "apply": ("ltb-reminders-apply", "RemindersApply.swift", "reminders_apply_path", "LTB_REMINDERS_APPLY"),
+}
 
-    command = [
-        "swift",
-        str(exporter),
-        "--lookahead-days",
-        str(config["lookahead_days"]),
+
+def reminders_helper_candidates(kind: str) -> list[Path]:
+    binary, script, _key, _env = REMINDERS_HELPER_NAMES[kind]
+    return [
+        # Inside the app bundle: Contents/Resources/engine -> Contents/MacOS.
+        ENGINE_DIR.parent.parent / "MacOS" / binary,
+        # A source checkout after `make helpers`.
+        ENGINE_DIR.parent / "build" / "helpers" / binary,
+        # A source checkout without a build: interpret the Swift source.
+        ENGINE_DIR.parent / "macos" / "Helpers" / script,
     ]
-    if reminders_export_needs_undated(config):
-        command.append("--include-undated")
-    if completed_only:
-        command.append("--completed-only")
-    for list_name in config["include_lists"]:
-        command.extend(["--list", list_name])
 
-    process = subprocess.run(command, capture_output=True, text=True, check=False)
+
+def resolve_reminders_helper(config: dict[str, Any], kind: str) -> Path:
+    """Locate the EventKit helper: config, environment, then the shipped copy."""
+
+    _binary, _script, key, env_name = REMINDERS_HELPER_NAMES[kind]
+    configured = str(config.get(key) or "").strip() or str(os.environ.get(env_name) or "").strip()
+    if configured:
+        path = Path(configured).expanduser()
+        if not path.exists():
+            raise RemindersUnavailable(f"Reminders helper not found: {path}")
+        return path
+    for candidate in reminders_helper_candidates(kind):
+        if candidate.is_file():
+            return candidate
+    raise RemindersUnavailable(
+        tr(
+            "The Reminders helper programs are missing. Reinstall Local Tasks Bridge, "
+            "or run `make helpers` in a source checkout.",
+            "缺少提醒事项辅助程序。请重新安装 Local Tasks Bridge，或在源码目录中运行 `make helpers`。",
+        )
+    )
+
+
+def reminders_helper_command(config: dict[str, Any], kind: str) -> list[str]:
+    path = resolve_reminders_helper(config, kind)
+    if path.suffix == ".swift":
+        if not shutil.which("swift"):
+            raise RemindersUnavailable(
+                tr(
+                    "Swift is not installed. Install the Xcode Command Line Tools (xcode-select --install) "
+                    "or use the app build, which ships compiled helpers.",
+                    "未安装 Swift。请安装 Xcode 命令行工具（xcode-select --install），或使用自带已编译辅助程序的 App 版本。",
+                )
+            )
+        return ["swift", str(path)]
+    if not os.access(path, os.X_OK):
+        raise RemindersUnavailable(f"Reminders helper is not executable: {path}")
+    return [str(path)]
+
+
+def reminders_access_hint() -> str:
+    return tr(
+        "Allow Reminders access for Local Tasks Bridge in System Settings > Privacy & Security > Reminders. "
+        "When running from Terminal, allow Terminal instead.",
+        "请在“系统设置 > 隐私与安全性 > 提醒事项”中允许 Local Tasks Bridge 访问。"
+        "如果是在“终端”中运行，请允许“终端”。",
+    )
+
+
+def run_reminders_helper(
+    config: dict[str, Any],
+    kind: str,
+    arguments: list[str],
+    *,
+    stdin_text: str | None = None,
+    failure: str,
+) -> list[dict[str, Any]]:
+    command = [*reminders_helper_command(config, kind), *arguments]
+    process = subprocess.run(command, input=stdin_text, capture_output=True, text=True, check=False)
     if process.returncode != 0:
-        hint = (
-            "\nIf this is a macOS privacy error, run the command once from Terminal and allow "
-            "Reminders access in System Settings > Privacy & Security > Reminders."
-        )
-        raise SystemExit(
-            "Failed to read Apple Reminders.\n"
-            f"Command: {' '.join(command)}\n"
-            f"{process.stderr.strip()}"
-            f"{hint}"
-        )
-
+        detail = process.stderr.strip()
+        raise RemindersUnavailable(f"{failure}\n{detail}\n{reminders_access_hint()}".rstrip())
     try:
-        payload = json.loads(process.stdout)
+        payload = json.loads(process.stdout or "[]")
     except json.JSONDecodeError as exc:
-        raise SystemExit(f"Reminders exporter returned invalid JSON: {exc}\n{process.stdout}") from exc
-
+        raise RemindersUnavailable(f"Reminders helper returned invalid JSON: {exc}") from exc
     if not isinstance(payload, list):
-        raise SystemExit("Reminders exporter did not return a JSON array.")
+        raise RemindersUnavailable("Reminders helper did not return a JSON array.")
     return payload
+
+
+def run_reminders_eventkit_export(config: dict[str, Any], completed_only: bool = False) -> list[dict[str, Any]]:
+    arguments = ["--lookahead-days", str(config["lookahead_days"])]
+    if reminders_export_needs_undated(config):
+        arguments.append("--include-undated")
+    if completed_only:
+        arguments.append("--completed-only")
+    for list_name in config["include_lists"]:
+        arguments.extend(["--list", list_name])
+    return run_reminders_helper(config, "export", arguments, failure="Failed to read Apple Reminders.")
 
 
 def run_reminders_lists_export(config: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1942,37 +2056,16 @@ def run_reminders_lists_export(config: dict[str, Any]) -> list[dict[str, Any]]:
         return run_reminders_sqlite_lists_export(config)
 
 
-def run_reminders_eventkit_lists_export(config: dict[str, Any]) -> list[dict[str, Any]]:
-    exporter = expand_path(config["reminders_exporter_path"])
-    if not exporter.exists():
-        raise SystemExit(f"Reminders exporter not found: {exporter}")
-    if not shutil.which("swift"):
-        raise SystemExit("Swift is not installed or not on PATH. This sync requires macOS Swift/EventKit.")
-
-    command = [
-        "swift",
-        str(exporter),
-        "--lists-only",
-    ]
-    for list_name in config["include_lists"]:
-        command.extend(["--list", list_name])
-
-    process = subprocess.run(command, capture_output=True, text=True, check=False)
-    if process.returncode != 0:
-        raise SystemExit(
-            "Failed to read Apple Reminders lists.\n"
-            f"Command: {' '.join(command)}\n"
-            f"{process.stderr.strip()}"
-        )
-
-    try:
-        payload = json.loads(process.stdout)
-    except json.JSONDecodeError as exc:
-        raise SystemExit(f"Reminders lists exporter returned invalid JSON: {exc}\n{process.stdout}") from exc
-
-    if not isinstance(payload, list):
-        raise SystemExit("Reminders lists exporter did not return a JSON array.")
-    return payload
+def run_reminders_eventkit_lists_export(
+    config: dict[str, Any],
+    *,
+    all_lists: bool = False,
+) -> list[dict[str, Any]]:
+    arguments = ["--lists-only"]
+    if not all_lists:
+        for list_name in config["include_lists"]:
+            arguments.extend(["--list", list_name])
+    return run_reminders_helper(config, "export", arguments, failure="Failed to read Apple Reminders lists.")
 
 
 def apple_timestamp_to_datetime(value: Any) -> dt.datetime | None:
@@ -2840,42 +2933,16 @@ def unique_desired_by_task_fingerprint(
 
 
 def run_reminders_apply(config: dict[str, Any], operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    apply_path = expand_path(config["reminders_apply_path"])
-    if not apply_path.exists():
-        raise SystemExit(f"Reminders apply helper not found: {apply_path}")
-    if not shutil.which("swift"):
-        raise SystemExit("Swift is not installed or not on PATH. Google-to-Apple sync requires Swift/EventKit.")
-
-    command = ["swift", str(apply_path)]
+    arguments: list[str] = []
     for list_name in config.get("include_lists", []):
-        command.extend(["--list", list_name])
-    process = subprocess.run(
-        command,
-        input=json.dumps(operations, ensure_ascii=False),
-        capture_output=True,
-        text=True,
-        check=False,
+        arguments.extend(["--list", list_name])
+    return run_reminders_helper(
+        config,
+        "apply",
+        arguments,
+        stdin_text=json.dumps(operations, ensure_ascii=False),
+        failure="Failed to update Apple Reminders from Google.",
     )
-    if process.returncode != 0:
-        hint = (
-            "\nIf this is a macOS privacy error, run the command once from Terminal and allow "
-            "Reminders access in System Settings > Privacy & Security > Reminders."
-        )
-        raise SystemExit(
-            "Failed to update Apple Reminders from Google.\n"
-            f"Command: swift {apply_path}\n"
-            f"{process.stderr.strip()}"
-            f"{hint}"
-        )
-
-    try:
-        payload = json.loads(process.stdout or "[]")
-    except json.JSONDecodeError as exc:
-        raise SystemExit(f"Reminders apply helper returned invalid JSON: {exc}\n{process.stdout}") from exc
-
-    if not isinstance(payload, list):
-        raise SystemExit("Reminders apply helper did not return a JSON array.")
-    return payload
 
 
 def plan_google_changes_to_reminders(
@@ -4909,7 +4976,7 @@ def run_tasks_sync(config: dict[str, Any], dry_run: bool = False) -> None:
     state = load_state(state_path)
     account_binding = resolve_sync_account_binding(config, reminders)
     bind_or_validate_sync_state_accounts(state, account_binding)
-    config["_expected_google_credential_binding"] = account_binding["google"]
+    expect_google_binding(config, account_binding)
     client = GoogleTasksClient(config)
     tasklists, missing_tasklists = inspect_tasklists_for_desired(client, desired_by_list, config)
     tasks_by_list: dict[str, list[dict[str, Any]]] = {}
@@ -5308,7 +5375,7 @@ def run_calendar_sync(config: dict[str, Any], dry_run: bool = False) -> None:
     state = load_state(state_path)
     account_binding = resolve_sync_account_binding(config, reminders)
     bind_or_validate_sync_state_accounts(state, account_binding)
-    config["_expected_google_credential_binding"] = account_binding["google"]
+    expect_google_binding(config, account_binding)
     client = GoogleCalendarClient(config)
     existing_by_uid: dict[str, dict[str, Any]] = {}
     duplicates: list[dict[str, Any]] = []
@@ -6126,8 +6193,13 @@ def local_reauth_can_satisfy_binding(config: dict[str, Any]) -> bool:
         state = load_state(expand_path(config["state_path"]))
     except Exception:
         return True
-    bound = str((state.get("account_binding") or {}).get("google") or "")
+    binding = state.get("account_binding") or {}
+    bound = str(binding.get("google") or "") if isinstance(binding, dict) else ""
     if not bound:
+        return True
+    if isinstance(binding, dict) and int(binding.get("version") or 1) >= 2:
+        # Bound to the Google account itself: a browser sign-in to that same
+        # account satisfies the binding whatever credential it produces.
         return True
     for candidate in load_token_candidates(config):
         if str(candidate.get("_credential_source") or "") != "gcloud_adc":

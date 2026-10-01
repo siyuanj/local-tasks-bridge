@@ -46,7 +46,7 @@ class LocalSafetyTests(unittest.TestCase):
                                     "completed_at": "2026-09-30T01:00:00Z"}
                         finished_uid, finished_body, finished_digest = sync.build_task(finished, config)
                 client = mock.Mock()
-                client.patch_task.return_value = {**tasks[0], "status": "completed"}
+                client.complete_task.return_value = {**tasks[0], "status": "completed"}
                 with contextlib.ExitStack() as stack:
                     def patch(name, **kwargs):
                         return stack.enter_context(mock.patch.object(sync, name, **kwargs))
@@ -61,10 +61,11 @@ class LocalSafetyTests(unittest.TestCase):
                     stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
                     sync.run_tasks_sync(config)
                 client.delete_task.assert_not_called()
+                client.patch_task.assert_not_called()
                 if propagation_enabled:
-                    client.patch_task.assert_called_once_with("google-list", "finished", {"status": "completed"})
+                    client.complete_task.assert_called_once_with("google-list", "finished")
                 else:
-                    client.patch_task.assert_not_called()
+                    client.complete_task.assert_not_called()
 
     def test_inbound_completion_is_not_deleted_using_stale_completed_snapshot(self):
         with tempfile.TemporaryDirectory() as directory:

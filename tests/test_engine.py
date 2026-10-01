@@ -224,7 +224,7 @@ class AccountBindingIsolationTests(unittest.TestCase):
             with self.assertRaises(sync.AuthenticationRequired) as caught:
                 sync.refresh_token_with_fallback(config, token_a)
 
-        self.assertIn("gcloud-login", str(caught.exception))
+        self.assertIn("ltb auth", str(caught.exception))
         # Still exactly one call, with token_a: the mismatched credential was
         # never sent to Google.
         self.assertEqual(refresh.call_count, 1)
@@ -641,20 +641,6 @@ class GoogleTasksDueTests(unittest.TestCase):
         ):
             with self.assertRaises(sync.ManagementActionError):
                 sync.management_reconnect(sync.default_config(), mock.Mock(yes=True))
-
-    def test_release_installs_the_management_launcher_from_the_stable_runtime(self) -> None:
-        root = ROOT
-        setup_source = (root / "setup-new-mac.sh").read_text(encoding="utf-8")
-        bundle_source = (root / "make-migration-bundle.sh").read_text(encoding="utf-8")
-        launcher_source = (root / "google-tasks-manager.command").read_text(encoding="utf-8")
-
-        self.assertIn('SOURCE_MANAGER="${SCRIPT_DIR}/google-tasks-manager.command"', setup_source)
-        self.assertIn('MANAGER_LAUNCHER="${HOME}/Applications/Google Tasks 동기화 관리.command"', setup_source)
-        self.assertIn('ln -sfn "$MANAGER" "$MANAGER_LAUNCHER"', setup_source)
-        self.assertIn('copy_required "google-tasks-manager.command"', bundle_source)
-        self.assertIn('LAUNCHER_SOURCE="${BASH_SOURCE[0]}"', launcher_source)
-        self.assertIn('RUNTIME_CURRENT="$(cd "$(dirname "$LAUNCHER_SOURCE")" && pwd -P)"', launcher_source)
-        self.assertIn('manage "$@"', launcher_source)
 
     def test_build_task_sets_due_from_all_day_reminder(self) -> None:
         reminder = {

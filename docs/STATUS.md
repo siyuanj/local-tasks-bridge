@@ -25,9 +25,11 @@
   已指向该 commit。首次 `mv` 因目标为目录符号链接，把临时链接放进旧 release，
   顶层 current 未变；确认精确目标后移除该临时链接，以 `ln -shfn` 完成切换并
   复核源码/运行哈希。
-- 实际后台验收：PID 56594 running；08:23:05、08:24:33、08:25:53 CST 三轮
-  连续成功，`consecutive_failures=0`、`last_error` 为空。当前状态仍为
+- 实际后台验收：PID 56594 running；08:23:05、08:24:33、08:25:53、08:27:08
+  CST 四轮连续成功，`consecutive_failures=0`、`last_error` 为空。当前状态仍为
   `awaiting_mutation_approval`，仅暂缓 `google_tasks.complete=10`；其余同步运行。
+- 私有 OAuth 备份目录权限为 0700，其中 token、状态、配置和日志文件统一为
+  0600；未将任何凭据纳入 Git。
 - 尚未验证：注销/重启后的启动、长期跨睡眠/断网恢复、通用删除。Production
   解除 Testing 七天限制，但不保证令牌永不过期；撤销或 Google 安全规则仍可令其
   失效。

@@ -52,7 +52,8 @@ Never share `credentials.json`, `token.json`, `state.json` or the logs.
   reloads the file. An invalid file stops syncing until it is fixed.
 
 `ltb config init` writes the product defaults when no `config.json` exists;
-`ltb config init --force` replaces an existing file after making a backup.
+`ltb config init --force` replaces an existing file after making a backup —
+even when the file can't be read (a raw copy is kept).
 
 ## Settings reference
 
@@ -107,7 +108,8 @@ With `tasks_import_unsynced` on, a Google task without the footer in a list
 that syncs Google → Mac is handled like this:
 
 - If an active reminder in the paired list has the same title and due date, the
-  two are linked and the footer is added to the Google task.
+  two are linked and the footer is added to the Google task. The Google task's
+  notes are kept on both sides, after any notes the reminder already had.
 - Otherwise a new reminder is created in the paired Reminders list and the
   Google task gets the footer.
 - Completed Google tasks are not imported, so your Google history doesn't flood
@@ -250,6 +252,10 @@ shared client and this documentation cover Google Tasks only.
 
 Notes:
 
+- Set the proxy **before** signing in: in the setup assistant use **Network
+  settings (proxy)** on the sign-in step; later use **Settings… → Network**.
+- The one-line installer uses curl, which ignores the macOS system proxy: run
+  `export https_proxy=http://127.0.0.1:7890` (your proxy app's port) first.
 - Only `http://` and `https://` proxy addresses are accepted. For a SOCKS-only
   client, use its HTTP or “mixed” port.
 - Background processes don't always see the same proxy as your browser. If
@@ -339,10 +345,14 @@ codes:
 | 6 | `reminders_unavailable` | Reminders couldn't be read or written (usually permission) |
 | 7 | `config_invalid` | The config file or a merged setting is invalid |
 | 8 | `oauth_client_missing` | No usable Google client (neither your own nor a shared one) |
-| 9 | `network` | Google is unreachable; try again later |
+| 9 | `network` | Google is unreachable — also while refreshing the sign-in; try again later |
 | 10 | `plan_changed` | An approval no longer matches the current plan |
 
 Timestamps are ISO 8601 in UTC. Messages follow `language` / `LTB_LANG`.
+
+Commands that write — `sync`, `approvals apply|hold`, `rebuild`, `migrate`,
+`uninstall`, `signout`, `client import`, `config init|merge`, `agent` — finish
+their work before they honour SIGTERM, so they never stop half-way.
 
 ### Information
 
@@ -405,7 +415,8 @@ kept: signing in again to the same Google account continues where it left off.
 **`ltb sync [--dry-run] [--no-delete-stale] [--json]`** — run one sync in the
 foreground. `--dry-run` computes and prints the plan without changing anything.
 `--no-delete-stale` copies no completions or deletions in either direction —
-the setup assistant uses it for the first sync. If the plan exceeds the safety
+a list's first sync is deletion-free automatically, and this flag extends that
+to every list for one run. If the plan exceeds the safety
 limits, nothing is written and the command exits with code 5.
 
 ```bash
@@ -484,7 +495,9 @@ sync lock. Nothing is deleted on either side. **Reconnect Google…** in the app
 and `ltb manage reconnect` lead to the same result interactively.
 
 **`ltb migrate [--from PATH] [--dry-run] [--force] [--yes] [--json]`** — import
-an earlier installation, see [migration.md](migration.md).
+an earlier installation, see [migration.md](migration.md). `--force` imports
+even if this Mac is already set up, backing up the files it replaces,
+`config.json` included.
 
 ### Login item and removal
 
@@ -505,7 +518,10 @@ was started at login); `--revoke` also revokes the Google sign-in;
 doesn't delete the app: move it to the Trash yourself, or use the app's
 **Uninstall…** (which runs this command and then moves the app to the Trash) or
 the installer's `--uninstall` (which quits the app, runs this command and
-removes the app and the `ltb` link).
+removes the app and the `ltb` link). `--delete-data` removes only the product's
+own files (settings, credentials, token, sync map, status, lock and flag files,
+`backups/`) and the folder itself only if it is then empty; it also works when
+`config.json` can't be read. With `--revoke`, a failed revocation is reported.
 
 ### Other terminal commands
 

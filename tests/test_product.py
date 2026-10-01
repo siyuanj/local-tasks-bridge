@@ -962,6 +962,12 @@ class SecondReviewRegressionTests(unittest.TestCase):
             merged = run_engine(home, "config", "merge", "--json", stdin="{}")
             self.assertEqual(merged.returncode, 7, merged.stdout)
 
+    def test_reset_settings_returns_to_the_setup_assistant(self) -> None:
+        status = {"last_success_at": "2026-10-01T00:00:00+00:00"}
+        self.assertFalse(sync.setup_completed(sync.product_default_config(), status))
+        self.assertTrue(sync.setup_completed({**sync.product_default_config(), "setup_completed_at": "x"}, {}))
+        self.assertTrue(sync.setup_completed({"include_lists": ["My Tasks"]}, status))
+
     def test_write_commands_finish_before_honouring_sigterm(self) -> None:
         import signal as signals
 

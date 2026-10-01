@@ -20,7 +20,7 @@ If both exist, the trial is imported. Choose explicitly with `--from`.
 
 1. It finds the earlier settings file (or the one given with `--from`). If this
    Mac already has a 1.0 configuration, it stops — `--force` imports anyway and
-   keeps backups of the files it replaces.
+   keeps backups of the files it replaces, `config.json` included.
 2. It writes a new `~/.config/local-tasks-bridge/config.json` from the 1.0
    defaults plus your earlier choices: selected lists, per-list policies,
    direction, deletion and conflict settings, undated and import options, the
@@ -37,8 +37,8 @@ If both exist, the trial is imported. Choose explicitly with `--from`.
    so it no longer starts at login.
 5. It copies the OAuth client, the token, the sync map and the status file into
    `~/.config/local-tasks-bridge/` with private permissions.
-6. It deletes world-readable logs that very old upstream versions left in
-   `/tmp`.
+6. It moves world-readable logs that very old upstream versions left in
+   `/tmp` (`/tmp/icloud-reminders-google-sync.*`) into the same backup folder.
 
 Everything else stays where it was: the old settings folder, program files and
 logs are not touched.
@@ -54,7 +54,8 @@ ID in place.
    trial's app of the same name in `~/Applications` and moves it to the Trash
    as “Local Tasks Bridge (trial build …).app”.
 2. Open Local Tasks Bridge. It detects the earlier installation and offers
-   **Import My Existing Setup**. Choose it and confirm.
+   **Import My Existing Setup**. Choose it and confirm. The app must run from
+   the Applications folder for this.
 3. When macOS asks whether Local Tasks Bridge may access your reminders, click
    **Allow**. To macOS, 1.0 is a different app from the trial's permission
    host, so the permission is asked for again.
@@ -117,7 +118,7 @@ legacy method works but isn't supported by the app. To switch to a normal
 sign-in, set `use_adc` to `false` in `~/.config/local-tasks-bridge/config.json`,
 quit and reopen the app, and choose **Reconnect Google…**. Because the old sync
 map was bound to the gcloud credential, the bridge may then report *account
-binding required*; let **Reconnect Google…** (or `ltb rebuild`) rebuild the map — it backs up
+binding required*; choose **Pair Accounts Again…** (or run `ltb rebuild`) to rebuild the map — it backs up
 first and deletes nothing (see
 [Troubleshooting](troubleshooting.md#account-binding-required)).
 

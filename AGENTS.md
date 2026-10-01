@@ -42,8 +42,10 @@ Read these first:
    keeps syncing everything else. It asks only after the same destructive set
    has been seen on two consecutive cycles; **Hold** waits 6 hours; nothing is
    approved automatically by default (`auto_approve_destructive_loops` = 0).
-3. **Deletion-free first sync.** First syncs and state rebuilds use
-   `--no-delete-stale`.
+3. **Deletion-free start.** A list without entries in the sync map (first
+   sync, rebuilt or lost map, newly selected list) never propagates deletions
+   or completions on that cycle; rebuilds use `--no-delete-stale`. While
+   deletions are held, nothing is recreated or written for them.
 4. **Empty-source guard.** If the selected lists export no active reminders,
    deletions are skipped for that cycle.
 5. **Account binding.** `state.json` is bound to hashes of the Apple account IDs
@@ -64,6 +66,9 @@ Read these first:
 11. **List scope changes are never deletions.** Completions and deletions
     apply only to items of lists that are still selected and still paired
     with the same Google list.
+12. **Writes are never interrupted.** Write commands finish before honouring
+    SIGTERM and the app never cancels them; `uninstall --delete-data` deletes
+    only the product's own files.
 
 Only change sync behavior with a reproducible case and a regression test that
 fails without the change.

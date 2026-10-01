@@ -98,9 +98,17 @@ explains how to install Apple's free Command Line Tools.
 curl -fsSL https://raw.githubusercontent.com/siyuanj/local-tasks-bridge/main/install.sh | bash
 ```
 
+In mainland China, curl doesn't use the macOS system proxy. Point it at your
+proxy app first (use the HTTP port it shows), for example:
+
+```bash
+export https_proxy=http://127.0.0.1:7890
+curl -fsSL https://raw.githubusercontent.com/siyuanj/local-tasks-bridge/main/install.sh | bash
+```
+
 The installer downloads the latest release for your Mac's processor, checks it
 against the published `SHA256SUMS`, installs **Local Tasks Bridge.app** into
-`~/Applications`, links the `ltb` command into `~/.local/bin` and opens the app.
+`~/Applications` (or updates an existing copy where it is), links the `ltb` command into `~/.local/bin` and opens the app.
 It never uses `sudo`. Because the app is not downloaded by a browser and the
 installer clears the quarantine flag, you won't see the Gatekeeper prompt. You
 are welcome to read [install.sh](install.sh) first.
@@ -111,7 +119,7 @@ Options go after `bash -s --`, for example
 | Option | Effect |
 | --- | --- |
 | `--version vX.Y.Z` | Install that release instead of the latest |
-| `--dest DIR` | Install into `DIR` (default `~/Applications`; `/Applications` works too) |
+| `--dest DIR` | Install into the folder `DIR` (default: where an existing copy is, otherwise `~/Applications`; a path ending in `.app` is refused) |
 | `--zip PATH` | Install a release zip you downloaded; a `SHA256SUMS` next to it is verified |
 | `--from-source [DIR]` | Build from source instead (needs the Xcode Command Line Tools) |
 | `--no-cli` / `--no-open` | Don't link `ltb` / don't open the app afterwards |
@@ -136,6 +144,11 @@ Run it with `--help` for everything else.
 
 3. Double-click the zip and move **Local Tasks Bridge.app** into the
    Applications folder (`/Applications`, or `Applications` in your home folder).
+   If Safari's *Open “safe” files after downloading* is on, Safari has already
+   unzipped the download and removed the zip: move the extracted app from
+   Downloads instead (the checksum step then works only if you kept the zip).
+   The app must run from Applications — started from Downloads or a disk image
+   it refuses to finish setup or start at login.
 4. Open the app. Because 1.0 is not notarized, macOS blocks the first launch
    once:
    - **macOS 15 Sequoia and later:** macOS reports that “Local Tasks Bridge”
@@ -179,7 +192,10 @@ steps:
 2. **Sign-in method.** Choose **Quick sign-in**, the shared client built into
    release builds (nothing to set up), or **Use my own Google Cloud OAuth
    client** and import the JSON file you downloaded from Google with **Choose
-   Client JSON…**. See the [comparison](#choosing-a-sign-in-method).
+   Client JSON…**. See the [comparison](#choosing-a-sign-in-method). In
+   mainland China, first open **Network settings (proxy)** on this step and
+   enter your proxy, then sign in (see
+   [Network and proxy](docs/troubleshooting.md#network-and-proxy)).
 3. **Google sign-in.** Your browser opens Google's sign-in page; choose your
    account. While a client is unverified, Google shows **“Google hasn't
    verified this app”**: click **Advanced**, then **Go to … (unsafe)**. Leave
@@ -193,9 +209,7 @@ steps:
    matching Reminders list*; the new list gets exactly the same name.
 5. **Choose how to sync.** The defaults suit most people: two-way sync,
    completions and deletions within the safety limits, reminders without a due
-   date included, existing Google tasks imported, and the sync interval. In
-   mainland China, set the network proxy here as well (see
-   [Network and proxy](docs/troubleshooting.md#network-and-proxy)).
+   date included, existing Google tasks imported, and the sync interval.
 6. **Run the first sync.** The assistant first runs a dry run and shows what
    would happen, for example how many tasks will be added to Reminders and how
    many reminders to Google Tasks. When you click **Start Syncing**, it runs the
@@ -239,7 +253,9 @@ to the same account keeps it.
   the last sync and the available actions, including **Open Google Tasks**,
   **Open Reminders**, **Open Logs** and **Copy Diagnostics**.
 - **Sync Now** starts a cycle immediately. **Pause Sync** stops all syncing,
-  even across restarts, until you choose **Resume Sync**.
+  even across restarts, until you choose **Resume Sync**; the menu keeps showing
+  the last sync result meanwhile. If a write such as the first sync is still
+  running, **Quit Local Tasks Bridge** waits for it (“Finishing…”).
 - Changes you make in Reminders on the Mac — or that arrive from your iPhone
   through iCloud — usually reach Google within seconds: the app notices the
   change and starts a cycle right away.
@@ -311,12 +327,15 @@ More in [docs/troubleshooting.md](docs/troubleshooting.md).
   deletions and completions and keeps syncing everything else. You are asked
   only after the same plan shows up on two cycles in a row, so a momentary
   glitch doesn't put a question on your screen.
-- **The first sync never deletes or completes anything**, and if the selected
-  lists ever come back completely empty, deletions are skipped for that cycle.
+- **New lists start safely.** A list with no entries in the sync map yet — on
+  the first sync, after the map was rebuilt or lost, or when you newly select
+  it — syncs without deletions or completions on that cycle. If the selected
+  lists ever come back completely empty, deletions are skipped for that cycle
+  too.
 - **Your sync map is bound to your accounts.** It is tied to your Apple account
   and your Google account ID. Signing in again to the same Google account
   continues where you left off; a different Google or Apple account stops the
-  sync instead of mixing data, until you choose **Reconnect Google…**.
+  sync instead of mixing data, until you choose **Pair Accounts Again…**.
 - **Writes are verified.** After writing, the bridge re-reads Google Tasks and
   checks every synced title and due date.
 - **Private files.** Settings, sign-in and sync map live in

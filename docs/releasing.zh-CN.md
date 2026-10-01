@@ -24,7 +24,7 @@ Local Tasks Bridge 遵循[语义化版本](https://semver.org/lang/zh-CN/)：
 
 ## 发布新版本
 
-1. **从 CI 全部通过的 `main` 开始。** CI 会在 Python 3.9、3.12 和 3.13 上运行单元测试和端到端测试，检查脚本和工作流，并在 macOS 上构建 App 并做冒烟测试。
+1. **从 CI 全部通过的 `main` 开始。** CI 会在 Python 3.9、3.12 和 3.13 上运行单元测试和端到端测试，检查脚本和工作流（使用固定版本的工具；缺少工具时检查即失败，`LINT_REQUIRE=1`），并在 macOS 上构建 App 并做冒烟测试。
 2. **在分支上准备发布**（`release/vX.Y.Z`）：
    - 设置 `VERSION` 和 `engine/local_tasks_bridge.py` 中的 `__version__`；
    - 把 `CHANGELOG.md` 中 `## [Unreleased]` 下的条目移到新的 `## [X.Y.Z] - YYYY-MM-DD` 一节，并更新文末的比较链接——这一节会成为发布说明；
@@ -47,8 +47,8 @@ Local Tasks Bridge 遵循[语义化版本](https://semver.org/lang/zh-CN/)：
 2. 用 `.github/scripts/release-notes.sh` 从 `CHANGELOG.md` 的 `## [X.Y.Z]` 一节提取发布说明——这一节缺失或为空时，发布会停止；
 3. 分别用 macOS 系统自带的 Python 和内置 Python 运行测试，并运行安装脚本和发布源码检查的自测；
 4. 如果三个 `MACOS_*` 密钥都存在，就把 Developer ID 证书导入一个临时钥匙串（否则构建为临时签名）；如果三个 Apple 密钥都存在，就进行公证；
-5. 使用 `LTB_OAUTH_CLIENT_JSON` 中的共享 OAuth 客户端运行 `scripts/package-release.sh --arch all`：生成两种架构、内置 Python 的 App，以及 `SHA256SUMS` 和 `release-manifest.json`；
-6. 在一个临时的个人目录中用 `install.sh` 安装 arm64 的 zip，作为冒烟测试；
+5. 使用 `LTB_OAUTH_CLIENT_JSON` 中的共享 OAuth 客户端运行 `scripts/package-release.sh --arch all`：生成两种架构、内置 Python 的 App，以及 `SHA256SUMS` 和 `release-manifest.json`。缺少这个密钥时，构建中不含共享客户端，任务摘要中会显示警告；如果仓库变量 `LTB_REQUIRE_SHARED_CLIENT` 为 `true`，发布会直接失败；
+6. 安装 Rosetta，并在一个临时的个人目录中用 `install.sh` 对两个 zip 做冒烟测试——标签构建中，无法运行的冒烟测试会让发布失败；
 7. 拒绝覆盖已存在的发布，先把两个 zip、`SHA256SUMS` 和 `release-manifest.json` 上传到一个草稿发布，然后再正式发布。
 
 之后，在宣布之前请先**测试已发布的版本**，最好在另一个 macOS 用户账号中进行：一行命令安装（它安装的是 GitHub 标记为 *Latest* 的版本）、浏览器下载加 Gatekeeper 确认的流程、用 `shasum -a 256` 与 `SHA256SUMS` 核对、用两种登录方式和测试列表分别走一遍设置向导、从上一个版本升级（设置和同步对应关系都应保留）、“检查更新…”，以及卸载。
@@ -68,6 +68,8 @@ Local Tasks Bridge 遵循[语义化版本](https://semver.org/lang/zh-CN/)：
 | `APPLE_ID` | 将来使用：用于公证的 Apple ID |
 | `APPLE_TEAM_ID` | 将来使用：Apple 开发者团队 ID |
 | `APPLE_APP_PASSWORD` | 将来使用：该 Apple ID 的 App 专用密码（appleid.apple.com →“登录与安全”→“App 专用密码”） |
+
+仓库变量（Settings → Secrets and variables → Actions → Variables）：`LTB_REQUIRE_SHARED_CLIENT=true` 会让缺少 `LTB_OAUTH_CLIENT_JSON` 的发布直接失败，而不只是警告。
 
 `scripts/package-release.sh` 从 `LTB_OAUTH_CLIENT_JSON`（或 `LTB_OAUTH_CLIENT_FILE` 指定的文件路径）读取客户端，用 `LTB_SIGN_IDENTITY` 签名（默认为 `-`，即临时签名），并在设置 `LTB_NOTARIZE=1` 以及 `APPLE_ID`、`APPLE_TEAM_ID`、`APPLE_APP_PASSWORD` 后进行公证和装订（staple）。它从不打印这些值。
 

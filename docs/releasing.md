@@ -32,7 +32,8 @@ The version lives in three places that must agree:
 ## Cutting a release
 
 1. **Start from a green `main`.** CI runs the unit and end-to-end tests on
-   Python 3.9, 3.12 and 3.13, lints the scripts and workflows, and builds and
+   Python 3.9, 3.12 and 3.13, lints the scripts and workflows with pinned
+   tools (a missing tool fails lint there, `LINT_REQUIRE=1`), and builds and
    smoke-tests the app on macOS.
 2. **Prepare the release on a branch** (`release/vX.Y.Z`):
    - set `VERSION` and `__version__` in `engine/local_tasks_bridge.py`;
@@ -71,9 +72,13 @@ workflow can also be started by hand (Actions → Release → *Run workflow*). I
    notarizes if the three Apple secrets exist;
 5. runs `scripts/package-release.sh --arch all` with the shared OAuth client
    from `LTB_OAUTH_CLIENT_JSON`: both architectures with an embedded Python,
-   `SHA256SUMS` and `release-manifest.json`;
-6. installs the arm64 zip with `install.sh` into a temporary home as a smoke
-   test;
+   `SHA256SUMS` and `release-manifest.json`. Without that secret the builds have
+   no shared client and the job summary shows a warning; with the repository
+   variable `LTB_REQUIRE_SHARED_CLIENT` set to `true`, the release fails
+   instead;
+6. installs Rosetta and smoke-tests both zips with `install.sh` in a
+   temporary home; on a tag build, a smoke test that can't run fails the
+   release;
 7. refuses to overwrite an existing release, uploads the two zips,
    `SHA256SUMS` and `release-manifest.json` to a draft release, and then
    publishes it.
@@ -102,6 +107,10 @@ Settings → Secrets and variables → Actions:
 | `APPLE_ID` | Future: the Apple ID used for notarization |
 | `APPLE_TEAM_ID` | Future: the Apple Developer team ID |
 | `APPLE_APP_PASSWORD` | Future: an app-specific password for that Apple ID (appleid.apple.com → Sign-In and Security → App-Specific Passwords) |
+
+Repository variable (Settings → Secrets and variables → Actions → Variables):
+`LTB_REQUIRE_SHARED_CLIENT=true` makes a release without
+`LTB_OAUTH_CLIENT_JSON` fail instead of only warning.
 
 `scripts/package-release.sh` reads the client from `LTB_OAUTH_CLIENT_JSON` (or a
 file path in `LTB_OAUTH_CLIENT_FILE`), signs with `LTB_SIGN_IDENTITY` (default

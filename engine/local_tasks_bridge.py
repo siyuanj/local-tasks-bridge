@@ -4069,6 +4069,12 @@ class ManagementActionError(RuntimeError):
 def setup_completed(config: dict[str, Any], status: dict[str, Any] | None = None) -> bool:
     if config.get("setup_completed_at"):
         return True
+    if config.get("config_version"):
+        # A product config (for example right after Reset Settings) is set up
+        # only once the assistant has recorded it, so no list is synced before
+        # the person has chosen it again.
+        return False
+    # Older configs predate the marker: a successful sync means set up.
     return bool((status or {}).get("last_success_at"))
 
 

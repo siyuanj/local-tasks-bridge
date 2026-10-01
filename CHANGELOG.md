@@ -48,6 +48,11 @@ The first release as **Local Tasks Bridge**, the maintained fork of
   batches of deletions and completions are reviewed there (**Apply N Changes**
   or **Keep On Hold**); without the app, the engine asks with an `osascript`
   dialog.
+- **Reset Settings…** when `config.json` can't be read, and **Pair Accounts
+  Again…** for account changes (with **Use a Different Google Account** when
+  the change was a mistake).
+- A proxy setting on the sign-in step of the setup assistant, so the proxy is
+  in place before signing in.
 - **Pause and resume** (`ltb pause`, `ltb resume`); the paused state survives
   restarts.
 - **JSON command-line interface** for the app — `version`, `status`, `lists`,
@@ -136,8 +141,8 @@ From the simulated end-to-end tests and reviews before release:
   loses the edit: if the edit is newer, the task is created again.
 - `status.json` and notifications keep only the first line of an error, so
   titles stay in the private log.
-- Reads are retried up to 3 times after dropped connections, timeouts, HTTP
-  429 and 5xx.
+- Reads get up to 3 attempts after dropped connections, timeouts, HTTP 429
+  and 5xx.
 - The sync map is saved before a conflict (with `conflict_policy: skip`) or a
   failed verification ends a cycle.
 - A failed manual sync is recorded as failed instead of staying “running”, and
@@ -149,6 +154,30 @@ From the simulated end-to-end tests and reviews before release:
 - `ltb uninstall` and `ltb agent uninstall` run from Terminal stop the running
   login item; the app marks its own calls with `LTB_CALLER=app`.
 - A background loop hosted by the app stops when the app is gone.
+
+From the second review round:
+
+- A list with no entries in the sync map yet — first sync, rebuilt or lost map,
+  newly selected list — syncs without deletions or completions on that cycle.
+- A deleted Google task is recreated only when the reminder was edited after
+  the deletion or the list doesn't sync deletions; while deletions are held,
+  nothing is recreated or written.
+- Pairing an existing Google task with a reminder keeps the Google notes on
+  both sides.
+- Pausing keeps the last sync state visible.
+- `uninstall --delete-data` removes only the product's own files, works with
+  an unreadable `config.json`, and reports a failed revocation.
+- `migrate` moves legacy `/tmp` logs into the backup folder; `migrate --force`
+  also backs up the replaced `config.json`.
+- A network failure while refreshing the sign-in is reported as a network
+  problem (exit code 9), not as “sign in again”.
+- Write commands finish before honouring SIGTERM, and the app never cancels
+  them; Quit waits. `config init --force` works on an unreadable config.
+- The app refuses to turn on Start at login, import, finish setup or install
+  the command-line tool while it runs from a temporary location.
+- The installer updates an existing copy where it is, refuses a `--dest`
+  ending in `.app`, and explains the `https_proxy` setting when a download
+  fails.
 
 ### Removed
 

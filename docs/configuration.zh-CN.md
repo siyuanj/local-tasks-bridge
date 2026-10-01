@@ -40,7 +40,7 @@ App 与同步引擎之间的技术接口规定在 [app-engine-contract.md](app-e
   `config merge` 从标准输入读取一个 JSON 对象，校验合并后的完整结果，以 `0600` 权限原子写入，并输出新的设置。未知的键或无效的值会以 `config_invalid` 拒绝，不会写入任何内容。
 - **手动编辑：** 你也可以用文本编辑器修改 `config.json`，这也是修改[高级选项](#高级选项)的唯一方式。请先备份，保持 JSON 格式正确，改完后退出并重新打开 App，让后台同步重新读取文件。文件无效时同步会停止，直到修复为止。
 
-`ltb config init` 会在 `config.json` 不存在时写入产品默认设置；`ltb config init --force` 会先备份再替换已有文件。
+`ltb config init` 会在 `config.json` 不存在时写入产品默认设置；`ltb config init --force` 会先备份再替换已有文件——即使该文件无法读取也可以（此时会保留一份原样副本）。
 
 ## 设置项参考
 
@@ -83,7 +83,7 @@ App 与同步引擎之间的技术接口规定在 [app-engine-contract.md](app-e
 
 开启 `tasks_import_unsynced` 后，对于“从 Google 同步到 Mac”的列表中没有同步标记的 Google 任务：
 
-- 如果配对的提醒事项列表中有一条标题和截止日期都相同的未完成提醒事项，两者会被关联，并在 Google 任务中添加同步标记。
+- 如果配对的提醒事项列表中有一条标题和截止日期都相同的未完成提醒事项，两者会被关联，并在 Google 任务中添加同步标记。Google 任务的备注会在两边都保留，接在提醒事项原有的备注之后。
 - 否则，会在配对的提醒事项列表中新建一条提醒事项，并给这个 Google 任务加上同步标记。
 - 已完成的 Google 任务不会被导入，免得 Google 的历史记录塞满“提醒事项”。没有截止日期的任务，只有在该列表同步无日期条目时才会导入。
 
@@ -179,6 +179,8 @@ App 与同步引擎之间的技术接口规定在 [app-engine-contract.md](app-e
 
 注意：
 
+- 请在**登录之前**设置代理：设置向导中，在登录方式这一步使用“网络设置（代理）”；之后可以在“设置…”→“网络”中修改。
+- 一行命令安装使用的 curl 不会读取 macOS 系统代理：请先运行 `export https_proxy=http://127.0.0.1:7890`（端口以你的代理 App 为准）。
 - 只接受 `http://` 和 `https://` 形式的代理地址。如果你的客户端只提供 SOCKS，请使用它的 HTTP 端口或“混合”（mixed）端口。
 - 后台进程看到的代理不一定与浏览器相同。如果网页能正常打开、同步却报网络错误，请明确设置代理。
 - **中国大陆：** 无法直接访问 Google。请运行代理客户端，并填入它的本地 HTTP 端口，例如：
@@ -236,10 +238,12 @@ python3 -B engine/local_tasks_bridge.py --config ~/.config/local-tasks-bridge/co
 | 6 | `reminders_unavailable` | 无法读写提醒事项（通常是权限问题） |
 | 7 | `config_invalid` | 配置文件或合并的设置无效 |
 | 8 | `oauth_client_missing` | 没有可用的 Google 客户端（既没有自有的，也没有共享的） |
-| 9 | `network` | 无法连接 Google，请稍后重试 |
+| 9 | `network` | 无法连接 Google（刷新登录时也是如此），请稍后重试 |
 | 10 | `plan_changed` | 之前的确认与当前计划已不再一致 |
 
 时间戳为 UTC 的 ISO 8601 格式。消息语言遵循 `language` / `LTB_LANG`。
+
+会写入内容的命令——`sync`、`approvals apply|hold`、`rebuild`、`migrate`、`uninstall`、`signout`、`client import`、`config init|merge`、`agent`——会先完成手头的工作再响应 SIGTERM，因此不会中途停下。
 
 ### 查看信息
 
@@ -273,7 +277,7 @@ ltb client import ~/Downloads/client_secret_*.apps.googleusercontent.com.json
 
 ### 同步
 
-**`ltb sync [--dry-run] [--no-delete-stale] [--json]`**——在前台运行一轮同步。`--dry-run` 只计算并打印计划，不做任何更改。`--no-delete-stale` 在两个方向上都不同步完成和删除——设置向导的首次同步就用了它。如果计划超出安全上限，不会写入任何内容，命令以退出码 5 结束。
+**`ltb sync [--dry-run] [--no-delete-stale] [--json]`**——在前台运行一轮同步。`--dry-run` 只计算并打印计划，不做任何更改。`--no-delete-stale` 在两个方向上都不同步完成和删除——每个列表的首次同步本来就会自动跳过完成和删除，这个选项则让本次运行中的所有列表都这样做。如果计划超出安全上限，不会写入任何内容，命令以退出码 5 结束。
 
 ```bash
 ltb sync --dry-run                    # 会发生什么？
@@ -318,13 +322,13 @@ ltb approvals apply 3b6f…e91c   # 上面显示的 64 位“删除/完成”指
 
 **`ltb rebuild [--dry-run] [--yes] [--json]`**——在你确认当前使用的 Apple 和 Google 账号正是要同步的这一对之后，用于从 `account_binding_required` 中恢复。`--dry-run` 显示重建将会做什么——以空的同步对应关系、关闭完成与删除同步的方式计算——但不写入任何内容。`--yes` 会暂停后台循环、备份私密文件、把旧的 `state.json` 移入备份，然后执行一次安全同步来建立新的对应关系，整个过程都持有同步锁。两边都不会删除任何内容。App 中的“重新连接 Google…”和 `ltb manage reconnect` 以交互方式达到同样的结果。
 
-**`ltb migrate [--from 路径] [--dry-run] [--force] [--yes] [--json]`**——导入早期安装，见 [migration.zh-CN.md](migration.zh-CN.md)。
+**`ltb migrate [--from 路径] [--dry-run] [--force] [--yes] [--json]`**——导入早期安装，见 [migration.zh-CN.md](migration.zh-CN.md)。`--force` 表示即使这台 Mac 已经设置好也照样导入，并备份被替换的文件（包括 `config.json`）。
 
 ### 登录项与卸载
 
 **`ltb agent install --app <.app 路径> [--json]`**——写入并加载在登录时启动 App 的登录项（LaunchAgent `io.github.siyuanj.local-tasks-bridge`）；只在它尚未加载时才加载（加上 `--no-load` 则只写入不加载）。**`ltb agent uninstall [--bootout] [--json]`** 删除登录项，此后 App 不再在登录时启动。在“终端”中运行时，它还会停止正在运行的任务；App 自己的调用（以 `LTB_CALLER=app` 标记）只有加上 `--bootout` 才会停止。**`ltb agent status [--json]`** 报告 `installed`、`loaded`、`label`、`plist` 和 `program`。App 会自动管理这些。
 
-**`ltb uninstall [--revoke] [--delete-data] --yes [--json]`**——移除登录项；在“终端”中运行时还会停止正在运行的任务（登录时启动的 App 会因此退出）；`--revoke` 同时撤销 Google 授权；`--delete-data` 同时删除 `~/.config/local-tasks-bridge/` 和日志。它不会删除 App：请自己把它移到废纸篓，或者使用 App 中的“卸载…”（运行这条命令后把 App 移到废纸篓），或安装脚本的 `--uninstall`（先退出 App，再运行这条命令，然后删除 App 和 `ltb` 链接）。
+**`ltb uninstall [--revoke] [--delete-data] --yes [--json]`**——移除登录项；在“终端”中运行时还会停止正在运行的任务（登录时启动的 App 会因此退出）；`--revoke` 同时撤销 Google 授权；`--delete-data` 同时删除 `~/.config/local-tasks-bridge/` 和日志。它不会删除 App：请自己把它移到废纸篓，或者使用 App 中的“卸载…”（运行这条命令后把 App 移到废纸篓），或安装脚本的 `--uninstall`（先退出 App，再运行这条命令，然后删除 App 和 `ltb` 链接）。`--delete-data` 只删除本产品自己的文件（设置、凭据、令牌、同步对应关系、状态、锁和标志文件、`backups/`），只有在文件夹因此变空时才删除文件夹本身；即使 `config.json` 无法读取也能使用。加上 `--revoke` 时，如果撤销失败会明确告诉你。
 
 ### 其他终端命令
 

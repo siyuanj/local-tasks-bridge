@@ -78,14 +78,18 @@ All of these are in folders with mode `0700` and files with mode `0600`.
    only unique entries.
 6. **Decide what deletions are allowed.** Completions and deletions are
    considered only where the policies allow them and `--no-delete-stale` isn't
-   set. If the selected lists exported no active reminders at all, deletions
+   set, and only for lists that already have entries in the sync map — a list
+   seen for the first time (first sync, rebuilt or lost map, newly selected
+   list) syncs without them on that cycle. If the selected lists exported no
+   active reminders at all, deletions
    are skipped for this cycle (the *empty-source guard*); explicitly completed
    reminders can still propagate, so the completed reminders are exported too.
 7. **Plan Google → Apple.** For each linked item it compares the Google task
    with the Google digest stored at the last sync. Changed tasks become reminder
    updates or completions; Google tombstones of tracked tasks become reminder
    deletions; Google tasks without a footer are imported (linked to an
-   identical reminder, or created as new reminders). When both sides changed,
+   identical reminder, keeping the Google notes after the reminder's own, or
+   created as new reminders). When both sides changed,
    the conflict policy decides. A Google edit keeps the reminder's time of day,
    and a due date changed or cleared in Google is applied.
 8. **Plan Apple → Google.** Every desired reminder becomes a Google create or
@@ -147,8 +151,10 @@ Google or Reminders and returns the destructive items for review.
 - **Tombstones.** A deleted Google task deletes its reminder only if the state
   record links exactly that task ID. Old tombstones can't delete a reminder
   you restored, and tombstones are ignored when an active task with the same
-  UID exists. If the reminder was edited on the Mac after the deletion, the
-  newer edit wins and the task is created again in Google.
+  UID exists. A deleted task is created again only if the reminder
+  was edited after the deletion or the list doesn't sync deletions; while
+  deletions are held (first sync, safe sync, a plan awaiting approval),
+  nothing is recreated or written for it.
 
 ## Safety mechanisms
 
@@ -157,13 +163,13 @@ Google or Reminders and returns the destructive items for review.
 | Mutation plan with fingerprints and limits (25 items / 25 %) | Mass deletion or completion from a bug, a partial export or a mistaken bulk action |
 | Held deletions in the background, settled prompt, one question at a time | Stopping all sync because of one large batch; prompts caused by momentary glitches |
 | Approval bound to the destructive fingerprint, valid 10 minutes | Applying a different set than the one you reviewed |
-| `--no-delete-stale` on the first sync and while rebuilding | Deletions decided from an incomplete sync map |
+| No completions or deletions for lists without sync-map entries (first sync, rebuilt or lost map, new list); `--no-delete-stale` while rebuilding | Deletions decided from an incomplete sync map |
 | Empty-source guard | Deleting everything when Reminders or iCloud briefly returns nothing |
 | Scope check: only lists still selected and paired with the same Google list can lose items | Deleting Google tasks when a list is unselected, renamed or removed |
 | Account binding (Apple account IDs, Google account ID); recovery only through a confirmed, backed-up rebuild (`ltb rebuild`, **Reconnect Google…**) | Reusing one account's sync map for another account |
 | Sign-in rejected without the Tasks scope | A half-working sign-in that fails on every cycle |
 | Post-write verification of titles and due dates | Silent divergence between the two sides |
-| Up to 3 retries for reads after dropped connections, timeouts, 429 and 5xx; confirmed retry for completions | Duplicated or overwritten writes after an unknown network outcome |
+| Up to 3 attempts for reads after dropped connections, timeouts, 429 and 5xx; confirmed retry for completions | Duplicated or overwritten writes after an unknown network outcome |
 | Sync lock and loop lock | Two engines writing the same state |
 | Private files (`0700`/`0600`), titles only in the review window, the dialog, `approvals show` and logs; dialog text passed through the environment, not the command line; `status.json` and notifications keep only an error's first line | Other local users reading task titles or tokens |
 | Backups before reconnect, approvals, sign-out and migration | Losing the old state while recovering |
@@ -186,7 +192,12 @@ that start with `@@LTB `. The app posts notifications itself.
   and starts a cycle, but not sooner than `trigger_min_interval_seconds` (10)
   after the previous start.
 - **Pause.** While `paused` exists, cycles are skipped. The file survives
-  restarts.
+  restarts. `ltb status` then reports `paused` and keeps the last sync result
+  visible; sign-in, account and approval problems are still reported first.
+- **Writes finish.** Write commands — a sync, approvals, rebuild, migration,
+  uninstall, sign-out, client import, config and login-item changes — finish
+  before they honour SIGTERM, and the app never cancels them: **Quit** waits
+  (“Finishing…”).
 - **Held changes.** If a plan exceeds the limits, the cycle runs again with
   deletions and completions held back, so everything else stays in sync, and
   records `awaiting_mutation_approval`. Once the same destructive set has been

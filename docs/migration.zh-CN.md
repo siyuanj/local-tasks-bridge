@@ -16,12 +16,12 @@ Local Tasks Bridge 1.0 可以接管以下两种早期安装，而不会丢失 Go
 
 ## 导入会做什么
 
-1. 找到早期的设置文件（或 `--from` 指定的那个）。如果这台 Mac 上已经有 1.0 的配置，它会停止——加上 `--force` 则仍会导入，并备份被替换的文件。
+1. 找到早期的设置文件（或 `--from` 指定的那个）。如果这台 Mac 上已经有 1.0 的配置，它会停止——加上 `--force` 则仍会导入，并备份被替换的文件（包括 `config.json`）。
 2. 以 1.0 的默认设置为基础，加上你以前的选择，写入新的 `~/.config/local-tasks-bridge/config.json`：选中的列表、按列表的策略、同步方向、删除与冲突设置、无日期条目与导入选项、同步间隔、安全上限与确认设置、通知以及登录相关选项。Google 客户端的选择会设为 `auto`，因此导入的自有客户端会被使用。旧的辅助程序路径会被丢弃——1.0 使用自带的已编译辅助程序。
 3. 如果旧设置中没有代理，而旧的登录项设置了 `HTTPS_PROXY` 或 `HTTP_PROXY`，这个代理会成为 `proxy` 设置。
 4. 在复制任何文件**之前**，先停止旧的后台任务（`launchctl bootout gui/<uid>/com.icloud-reminders-google-sync`），确保它的最后一轮不会在复制之后再写入；并把旧的 LaunchAgent plist 移到 `~/.config/local-tasks-bridge/backups/<时间>-migrate/`，让它不再在登录时启动。
 5. 把 OAuth 客户端、令牌、同步对应关系和状态文件复制到 `~/.config/local-tasks-bridge/`，并设为私密权限。
-6. 删除很早期的上游版本留在 `/tmp` 中、所有人都能读取的日志。
+6. 把很早期的上游版本留在 `/tmp` 中、所有人都能读取的日志（`/tmp/icloud-reminders-google-sync.*`）移到同一个备份文件夹中。
 
 其他一切保持原样：旧的设置文件夹、程序文件和日志都不会被改动。
 
@@ -30,7 +30,7 @@ Local Tasks Bridge 1.0 可以接管以下两种早期安装，而不会丢失 Go
 ## 用 App 导入
 
 1. 安装 1.0（见 [README](../README.zh-CN.md#安装)）。安装脚本会识别 `~/Applications` 中试用版的同名 App，并把它以“Local Tasks Bridge (trial build …).app”的名字移到废纸篓。
-2. 打开 Local Tasks Bridge。它会检测到早期安装，并提供**“导入我现有的设置”**。选择它并确认。
+2. 打开 Local Tasks Bridge。它会检测到早期安装，并提供**“导入我现有的设置”**。选择它并确认。App 必须在“应用程序”文件夹中运行，才能执行导入。
 3. macOS 询问是否允许 Local Tasks Bridge 访问提醒事项时，点按“允许”。对 macOS 来说，1.0 与试用版的权限宿主是不同的 App，所以会重新请求权限。
 4. 检查设置（见[检查结果](#检查结果)）。
 
@@ -78,7 +78,7 @@ ltb migrate --from ~/.config/icloud-reminders-google-sync/config.json
 
 ### 通过 gcloud 登录的上游安装
 
-如果上游安装是通过 gcloud 的应用默认凭据（`use_adc: true`）登录的，导入后仍会继续使用这些凭据。这种遗留方式能用，但 App 不支持。要换成正常的登录方式，请在 `~/.config/local-tasks-bridge/config.json` 中把 `use_adc` 设为 `false`，退出并重新打开 App，然后选择**“重新连接 Google…”**。由于旧的同步对应关系绑定的是 gcloud 凭据，桥接随后可能会提示*账号绑定已变化*；请让“重新连接 Google…”（或 `ltb rebuild`）重建对应关系——它会先备份，并且不删除任何内容（见[故障排除](troubleshooting.zh-CN.md#账号绑定已变化)）。
+如果上游安装是通过 gcloud 的应用默认凭据（`use_adc: true`）登录的，导入后仍会继续使用这些凭据。这种遗留方式能用，但 App 不支持。要换成正常的登录方式，请在 `~/.config/local-tasks-bridge/config.json` 中把 `use_adc` 设为 `false`，退出并重新打开 App，然后选择**“重新连接 Google…”**。由于旧的同步对应关系绑定的是 gcloud 凭据，桥接随后可能会提示*账号绑定已变化*；请选择“重新配对账号…”（或运行 `ltb rebuild`）重建对应关系——它会先备份，并且不删除任何内容（见[故障排除](troubleshooting.zh-CN.md#账号绑定已变化)）。
 
 ## 回退
 

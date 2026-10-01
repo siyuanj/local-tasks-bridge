@@ -21,7 +21,7 @@ Start here:
 | --- | --- | --- |
 | `healthy` | Reminders and Google Tasks are in sync | Nothing |
 | `running` | A cycle is in progress | Wait a moment |
-| `paused` | You paused syncing | **Resume Sync**, or `ltb resume` |
+| `paused` | You paused syncing; the last sync result stays visible | **Resume Sync**, or `ltb resume` |
 | `setup_required` | Setup isn't finished, or the Reminders helpers are missing | **Finish Setup…**; if helpers are missing, reinstall the app |
 | `never_synced` | Nothing has been synced yet | Finish the first sync in the setup assistant |
 | `attention` | A dry run or a sign-in succeeded, but no full sync has finished since | Finish the first sync, or check again after the next cycle |
@@ -74,7 +74,9 @@ broke the app's signature. Download the zip again, compare it with
 If you open the app straight from Downloads or a disk image, macOS may run it
 from a hidden temporary location, and the login item can't find it after a
 restart. Move **Local Tasks Bridge.app** into `~/Applications` or
-`/Applications` first, then open it.
+`/Applications` first, then open it. While it runs from such a location, the
+app refuses to turn on **Start at login**, import an earlier setup, finish
+setup or install the command-line tool, and asks you to move it.
 
 ### “Python 3.9 or newer is required”
 
@@ -111,6 +113,14 @@ and open a new Terminal window. You can always run it by its full path:
   `/Library/Developer/CommandLineTools` and install them again.
 - Python older than 3.9 is reported: the Command Line Tools include a suitable
   `python3`; make sure `xcode-select -p` prints a path.
+
+### The settings file can't be read
+
+If `config.json` is damaged, the app offers **Reset Settings…** — in the menu,
+as a banner in **Settings… → General**, and on the setup screen. It keeps a
+backup copy of the unreadable file, starts from the default settings and lets
+you run the setup assistant again; your Google sign-in and sync map are kept.
+In Terminal, `ltb config init --force` does the same.
 
 ## Reminders access
 
@@ -164,6 +174,10 @@ sign-in wasn't used for about six months; or a Google security event.
 Fix: choose **Reconnect Google…** (**Settings → Google**) or run `ltb auth`.
 Syncing resumes on the next cycle. As long as you sign in to the same Google
 account, the sync map is kept.
+
+If Google simply can't be reached while the sign-in is refreshed — no network,
+or a missing proxy — the app reports a network problem (*Google can't be
+reached*, exit code 9) instead. Fix the connection; no new sign-in is needed.
 
 ### Google hasn't verified this app
 
@@ -220,22 +234,23 @@ user; a very old sync map without a binding.
 
 **What to do:**
 
-- **Wrong Google account by mistake:** choose **Reconnect Google…** and sign in
-  to the right account. Syncing continues; nothing needs rebuilding.
-- **The change is intended:** choose **Reconnect Google…** in **Settings →
-  Google**, or run `ltb manage reconnect` in Terminal. It checks the Google connection,
-  backs up your private files, shows the Apple and Google accounts it found,
-  and — only after you confirm — moves the old sync map into
-  `~/.config/local-tasks-bridge/backups/` and builds a new one with a dry run
-  followed by a sync that copies no deletions or completions. Nothing is
-  deleted on either side. Items that were synced before are matched again by
-  their notes footer or by title and date; with a new Google account, your
-  reminders are copied into it and its existing tasks are imported into
-  Reminders.
-- **From Terminal without the menu:** `ltb rebuild --dry-run` shows what a
-  rebuild would do, and `ltb rebuild --yes` performs it, with the same
-  safeguards — a backup first, the background loop and the sync lock held while
-  the map is replaced, and no deletions.
+- **The account change was a mistake** (for example you signed in to the wrong
+  Google account): choose **Pair Accounts Again…** and, in the sheet that
+  opens, **Use a Different Google Account** to sign in to the right one.
+  Syncing then continues; nothing needs rebuilding.
+- **The change is intended:** choose **Pair Accounts Again…** — in **Settings… →
+  Google**, or through **Reconnect Google…** in the menu while the account
+  check fails. The sheet shows the Apple and Google accounts now in use; when
+  you confirm, the bridge backs up your private files, moves the old sync map
+  into `~/.config/local-tasks-bridge/backups/` and builds a new one with one
+  safe sync that copies no deletions or completions. Nothing is deleted on
+  either side. Items that were synced before are matched again by their notes
+  footer or by title and date; with a new Google account, your reminders are
+  copied into it and its existing tasks are imported into Reminders.
+- **In Terminal:** `ltb rebuild --dry-run` shows what a rebuild would do and
+  `ltb rebuild --yes` performs it, with the same safeguards — a backup first,
+  the background loop and the sync lock held while the map is replaced, and no
+  deletions. `ltb manage reconnect` does the same interactively.
 - Signing in again to the **same** Google account never needs this: 1.0 binds
   the map to the account ID, not to a particular sign-in. Maps created by
   earlier versions are upgraded automatically on the first sync.
@@ -287,7 +302,9 @@ The limits can be changed with `max_destructive_changes` and
 Lists are paired by exact name. Changing which lists are synced never counts as
 deleting: the bridge completes or deletes only items of lists that are still
 selected and still paired with the same Google list, and leaves the items of
-every other list alone.
+every other list alone. A list that is new to the sync map — on the first sync,
+after a rebuild, or when you select it — syncs one cycle without completions
+or deletions.
 
 - **Unselecting a list** stops syncing it. Its reminders and its Google tasks
   stay as they are; select it again later and syncing continues where it left
@@ -318,9 +335,12 @@ A conflict is an item that changed on both sides between two cycles.
   **failed** (“Bidirectional conflicts left Apple Reminders and Google Tasks
   unsynced”), while other items keep syncing and the sync map is saved. Edit the item on one side so both
   sides match, or switch the list to `newer_wins`.
-- If you edit a reminder on the Mac after its Google task was deleted, and the
-  edit is newer than the deletion, the task is created again in Google instead
-  of the reminder being deleted.
+- If you edit a reminder on the Mac after its Google task was deleted, the task
+  is created again in Google only if your edit is newer than the deletion, or
+  the list doesn't sync deletions; otherwise the deletion wins. While deletions
+  are held — on a list's first sync, during a safe sync, or while a plan waits
+  for approval — nothing is recreated or deleted: the pending deletion simply
+  stays pending.
 
 ## Network and proxy
 
@@ -331,7 +351,9 @@ timeouts and TLS errors in the log.
   browser.
 - **Mainland China:** Google isn't reachable directly. Run a proxy client
   (Clash, ClashX, Clash Verge and so on) and enter its local HTTP or “mixed”
-  port in **Settings**, for example `http://127.0.0.1:7890` (Clash and ClashX)
+  port — on the setup assistant's sign-in step under **Network settings
+  (proxy)**, before you sign in, or later in **Settings… → Network** — for
+  example `http://127.0.0.1:7890` (Clash and ClashX)
   or `http://127.0.0.1:7897` (Clash Verge Rev):
 
   ```bash
@@ -340,6 +362,15 @@ timeouts and TLS errors in the log.
 
   Then check with `ltb account`. A client running in TUN / enhanced mode needs
   no setting.
+- **The one-line installer can't download:** curl doesn't use the macOS system
+  proxy. Point it at your proxy app first (use its port):
+
+  ```bash
+  export https_proxy=http://127.0.0.1:7890
+  curl -fsSL https://raw.githubusercontent.com/siyuanj/local-tasks-bridge/main/install.sh | bash
+  ```
+
+  The installer prints the same hint when a download fails.
 - **The browser works but sync fails:** background processes don't always pick
   up the same proxy as your browser. Set the proxy explicitly as above.
 - **A proxy is configured but you're on a network without it:** set the proxy
@@ -348,7 +379,7 @@ timeouts and TLS errors in the log.
   HTTP or mixed port.
 
 Transient read failures — dropped connections, timeouts, HTTP 429 and 5xx —
-are retried up to 3 times. A failed write is not repeated
+get up to 3 attempts. A failed write is not repeated
 blindly — except for completing a task, which is retried only after Google
 confirms the task is still open — so a network hiccup can't create
 duplicates. The next cycle catches up.
@@ -473,7 +504,8 @@ reminders and Google tasks stay.
    ltb uninstall --revoke --delete-data --yes
    ```
 
-   Or by hand:
+   It removes only Local Tasks Bridge's own files (and the folder, once it is
+   empty) and tells you if the Google revocation failed. Or by hand:
 
    ```bash
    launchctl bootout gui/$(id -u)/io.github.siyuanj.local-tasks-bridge

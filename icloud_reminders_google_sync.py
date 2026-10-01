@@ -1330,6 +1330,25 @@ class GoogleTasksClient:
         encoded_task = urllib.parse.quote(task_id, safe="")
         return self.request("PATCH", f"/lists/{encoded_list}/tasks/{encoded_task}", body=body)
 
+    def complete_task(self, tasklist_id: str, task_id: str) -> dict[str, Any]:
+        """Complete one task, confirming an unknown PATCH outcome before retrying."""
+        attempts = 3
+        for attempt in range(1, attempts + 1):
+            try:
+                return self.patch_task(tasklist_id, task_id, {"status": "completed"})
+            except urllib.error.URLError:
+                # Completion is idempotent, but the transport may have failed
+                # after Google accepted the PATCH. Read the task before another
+                # write so an unknown successful outcome is never repeated.
+                task = self.get_task(tasklist_id, task_id)
+                if str(task.get("status") or "") == "completed":
+                    return task
+                if attempt >= attempts:
+                    raise
+                time.sleep(min(2**attempt, 10))
+
+        raise AssertionError("unreachable Google Tasks completion retry state")
+
     def delete_task(self, tasklist_id: str, task_id: str) -> None:
         encoded_list = urllib.parse.quote(tasklist_id, safe="")
         encoded_task = urllib.parse.quote(task_id, safe="")
@@ -4784,7 +4803,7 @@ def run_tasks_sync(config: dict[str, Any], dry_run: bool = False) -> None:
                     patched = task
                 else:
                     try:
-                        patched = client.patch_task(tasklist_id, task_id, {"status": "completed"})
+                        patched = client.complete_task(tasklist_id, task_id)
                         completed += 1
                     except GoogleApiError as exc:
                         if exc.status not in (404, 410):

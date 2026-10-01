@@ -22,9 +22,10 @@ The explicit `--no-delete-stale` override still suppresses completion propagatio
 The personal OAuth app is now External / In production and uses the published
 Local Tasks Bridge homepage and privacy policy on the owner's GitHub Pages site.
 The production refresh token was independently refreshed and checked against the
-Tasks API. On this Mac the LaunchAgent uses the existing local system proxy, and
-the Tasks client retries transient GET failures only; writes are not retried
-after an unknown transport outcome.
+Tasks API. On this Mac the LaunchAgent uses the existing local system proxy. The
+Tasks client retries transient GET failures. A task-completion PATCH is retried
+only after a follow-up GET confirms that Google still reports the task as
+active; other writes are not retried after an unknown transport outcome.
 
 Apple Reminders와 Google Tasks를 로컬 Mac에서 양방향 동기화하는 도구다.
 Google은 iCloud Reminders를 직접 읽고 쓸 수 없으므로, 로그인된 Mac의

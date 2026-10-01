@@ -283,6 +283,42 @@ class GoogleTasksNetworkRetryTests(unittest.TestCase):
         self.assertEqual(urlopen.call_count, 1)
         sleep.assert_not_called()
 
+    def test_completion_confirms_unknown_success_before_retrying(self) -> None:
+        client = self.make_client()
+        completed = {"id": "task-1", "status": "completed"}
+
+        with mock.patch.object(
+            client,
+            "patch_task",
+            side_effect=sync.urllib.error.URLError("unknown PATCH outcome"),
+        ) as patch_task, mock.patch.object(
+            client, "get_task", return_value=completed
+        ) as get_task, mock.patch.object(sync.time, "sleep") as sleep:
+            result = client.complete_task("list-1", "task-1")
+
+        self.assertEqual(result, completed)
+        patch_task.assert_called_once_with("list-1", "task-1", {"status": "completed"})
+        get_task.assert_called_once_with("list-1", "task-1")
+        sleep.assert_not_called()
+
+    def test_completion_retries_only_after_confirming_it_is_still_active(self) -> None:
+        client = self.make_client()
+        completed = {"id": "task-1", "status": "completed"}
+
+        with mock.patch.object(
+            client,
+            "patch_task",
+            side_effect=[sync.urllib.error.URLError("PATCH did not arrive"), completed],
+        ) as patch_task, mock.patch.object(
+            client, "get_task", return_value={"id": "task-1", "status": "needsAction"}
+        ) as get_task, mock.patch.object(sync.time, "sleep") as sleep:
+            result = client.complete_task("list-1", "task-1")
+
+        self.assertEqual(result, completed)
+        self.assertEqual(patch_task.call_count, 2)
+        get_task.assert_called_once_with("list-1", "task-1")
+        sleep.assert_called_once_with(2)
+
 
 class GoogleTasksDueTests(unittest.TestCase):
     def test_reminders_apply_uses_stable_list_id_without_unsafe_title_fallback(self) -> None:

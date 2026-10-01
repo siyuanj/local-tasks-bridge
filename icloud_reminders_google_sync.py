@@ -5676,12 +5676,20 @@ def record_scheduled_sync_result(config: dict[str, Any], result: dict[str, Any])
     notify_sync_ok(config)
 
 
-def wait_for_next_cycle(interval: int, approvals: MutationPlanApprovals) -> None:
-    """Sleep until the next cycle, waking early once an open question is answered."""
+def wait_for_next_cycle(
+    interval: int,
+    approvals: MutationPlanApprovals,
+    *,
+    cycle_started_at: float | None = None,
+) -> None:
+    """Keep a start-to-start cadence, waking early once an open question is answered."""
+    started_at = time.monotonic() if cycle_started_at is None else cycle_started_at
+    deadline = started_at + interval
     if not approvals.dialog_open():
-        time.sleep(interval)
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(remaining)
         return
-    deadline = time.monotonic() + interval
     while approvals.dialog_running():
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -5920,6 +5928,7 @@ def cmd_run_loop(args: argparse.Namespace) -> None:
     consecutive_failures = restored_consecutive_failures(read_sync_status(config))
     approvals = MutationPlanApprovals(config)
     while True:
+        cycle_started_at = time.monotonic()
         started = utc_now_text()
         print(f"[{started}] sync start", flush=True)
         try:
@@ -6092,7 +6101,7 @@ def cmd_run_loop(args: argparse.Namespace) -> None:
             notify_sync_problem(config, f"Sync failed: {exc}")
         print(f"[{utc_now_text()}] sync end", flush=True)
         try:
-            wait_for_next_cycle(interval, approvals)
+            wait_for_next_cycle(interval, approvals, cycle_started_at=cycle_started_at)
         except KeyboardInterrupt:
             approvals.close()
             print("Stopping sync loop.", flush=True)

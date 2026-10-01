@@ -320,6 +320,30 @@ class GoogleTasksNetworkRetryTests(unittest.TestCase):
         sleep.assert_called_once_with(2)
 
 
+class SyncCadenceTests(unittest.TestCase):
+    def test_wait_uses_remaining_time_from_cycle_start(self) -> None:
+        approvals = mock.Mock()
+        approvals.dialog_open.return_value = False
+
+        with mock.patch.object(sync.time, "monotonic", return_value=125.0), mock.patch.object(
+            sync.time, "sleep"
+        ) as sleep:
+            sync.wait_for_next_cycle(60, approvals, cycle_started_at=100.0)
+
+        sleep.assert_called_once_with(35.0)
+
+    def test_overrunning_cycle_starts_the_next_cycle_without_extra_sleep(self) -> None:
+        approvals = mock.Mock()
+        approvals.dialog_open.return_value = False
+
+        with mock.patch.object(sync.time, "monotonic", return_value=170.0), mock.patch.object(
+            sync.time, "sleep"
+        ) as sleep:
+            sync.wait_for_next_cycle(60, approvals, cycle_started_at=100.0)
+
+        sleep.assert_not_called()
+
+
 class GoogleTasksDueTests(unittest.TestCase):
     def test_reminders_apply_uses_stable_list_id_without_unsafe_title_fallback(self) -> None:
         source = (Path(__file__).resolve().parent / "RemindersApply.swift").read_text(encoding="utf-8")

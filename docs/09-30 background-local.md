@@ -29,8 +29,9 @@ host, which requests its own Reminders grant and launches the reviewed Python
 ad-hoc signs it, verifies the signature, and records source/binary hashes outside
 the bundle. The user allowed the system prompt.
 
-The loop uses a 60-second sleep after each synchronization pass. It starts at
-login and restarts after unexpected process exit. It runs in
+The loop starts cycles on a 60-second start-to-start cadence; time spent syncing
+is deducted from the following wait. It starts at login and restarts after
+unexpected process exit. It runs in
 the signed-in user's session. A sleeping or offline Mac cannot synchronize; the
 loop resumes after waking/network recovery. No logout/reboot test is implied by
 loading the agent and observing scheduled cycles.

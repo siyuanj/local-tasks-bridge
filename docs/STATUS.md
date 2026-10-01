@@ -1,5 +1,38 @@
 # Local trial status
 
+## 2026-10-01 08:26 CST (Asia/Shanghai) - Production OAuth 与后台验收完成
+
+- 用户决定：明确要求执行并统一完成 Production 与长期授权；此前公开说明页和
+  延长授权有效期均已分别确认。10 条批量完成事项在执行前已明确排除，不把本次
+  “全部统一”扩展为其批准。
+- Google 实测：Audience 显示 In production。新 token 于 08:11 签发，文件 0600；
+  scope 集合与旧 token 相同，为 Tasks + userinfo.email + openid，新 refresh token
+  与旧值不同且存在，未返回 `refresh_token_expires_in`。独立强制刷新成功，
+  Google Tasks API 检查为 ok。已关闭含回调信息的完成标签页。
+- 账号绑定：新令牌首次运行被 fail-closed 保护拦下，没有写入/删除任务。通过官方
+  userinfo 对比确认新旧 token 的 subject 指纹和邮箱完全一致；旧状态确实绑定旧
+  refresh token。私密备份后只替换 `account_binding.google` 哈希，其他状态逐字段
+  相同，task 映射前后均为 12。`--dry-run --no-delete-stale` 成功读取 Apple 2、
+  Google list 1/tasks 2；没有重建或丢弃映射。
+- 网络与修复：后台出现 4 次 TLS EOF，直接连接实测超时，现有本地系统代理
+  `127.0.0.1:7897` 的 HTTP/SOCKS 探测均为 HTTP 200。LaunchAgent 已备份并加入
+  HTTP_PROXY、HTTPS_PROXY、NO_PROXY。引擎 commit
+  `4375a1d0a6353a202ac5eb33da67d237c2eb7b04` 只为 Tasks GET 增加最多 3 次有限
+  重试；POST/PATCH/DELETE 遇到未知传输结果不重试。97 项测试、py_compile、
+  shell 语法、release gate 和 diff check 通过。
+- 部署：新只读 release 的引擎 SHA-256 为
+  `5ff64d19c83d5953cbd0e40e4020130ee602e7a54f0681be796af841e4e4cfc6`，`current`
+  已指向该 commit。首次 `mv` 因目标为目录符号链接，把临时链接放进旧 release，
+  顶层 current 未变；确认精确目标后移除该临时链接，以 `ln -shfn` 完成切换并
+  复核源码/运行哈希。
+- 实际后台验收：PID 56594 running；08:23:05、08:24:33、08:25:53 CST 三轮
+  连续成功，`consecutive_failures=0`、`last_error` 为空。当前状态仍为
+  `awaiting_mutation_approval`，仅暂缓 `google_tasks.complete=10`；其余同步运行。
+- 尚未验证：注销/重启后的启动、长期跨睡眠/断网恢复、通用删除。Production
+  解除 Testing 七天限制，但不保证令牌永不过期；撤销或 Google 安全规则仍可令其
+  失效。
+- 要用户定的：长期授权无剩余决定；10 条完成是否回写 Google 仍是独立待答事项。
+
 ## 2026-10-01 08:10 CST (Asia/Shanghai) - Branding 完成，Production 待确认
 
 - 用户明确同意发布 OAuth 说明页。网站 commit `975fe65` 已 push 到

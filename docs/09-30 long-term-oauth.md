@@ -1,9 +1,9 @@
-# 长期 Google 授权准备（2026-09-30）
+# 长期 Google 授权（2026-10-01 完成）
 
-当前未完成长期授权：Audience 实测仍为 External / Testing，Publish app
-禁用，提示必须先完成 Branding。应用名称已保存为 Local Tasks Bridge；
-支持邮箱和开发者联系邮箱已有配置。应用首页、隐私政策、条款和授权域名为空。
-尚不能断言其中哪一字段是当前控制台的具体阻塞原因。
+Google Auth Platform 已实测为 External / In production。应用名称是
+Local Tasks Bridge；应用首页、隐私政策和授权域名均已保存，公开页面由本人
+`siyuanj.github.io` 托管。新授权令牌已签发、独立刷新并访问 Tasks API；后台
+三轮定时执行通过。
 
 ## 官方要求与边界
 
@@ -20,28 +20,25 @@
 权限保持 Google Tasks + openid / email，不增加 Calendar 或 Cloud Platform。
 Google Tasks 授权覆盖整个账号的 Tasks，My Tasks 限制属于本地代码。
 
-## 下一步执行与验收
+## 实际执行与验收
 
-1. 用户解锁 Mac 后，检查 Branding / Verification Center 的具体未完成项。
-   已知 Publish 按钮禁用，不通过脚本绕过控制台。
-2. 如果确需说明网页，先准备真实的首页和隐私政策草稿，再发布到本人控制的
-   站点。已通过只读 GitHub API 确认 siyuanj.github.io 公共仓库和 Pages 存在；
-   本次没有修改该网站或上传任何内容。
-3. 在最终扩展授权有效期前，按电脑操作接口要求取得具体确认，说明
-   External / Production 允许其他 Google 账号对自己的数据授权，并不公开
-   当前账号的待办或凭据。不要把改名保存当作 Production 已启用。
-4. 临时停止现有 LaunchAgent，把原 token.json 备份到私有目录，保留 0600。
-   通过现有 auth 流程，在 Production 下重新授权，使用 loopback + PKCE +
-   state 校验，不显示回调 code、客户端 secret 或 token。
-5. 核验实际 scope、refresh token 存在及新授权结果；执行一次官方刷新和
-   只读 Tasks API 验证。不要从普通 access token 的一小时期限推断刷新期限。
-6. 恢复 LaunchAgent，核验真实定时轮次和权限错误状态；保留 My Tasks 边界、
-   单次破坏性限额 1 和待确认的 10 条完成计划。
+1. 发布本人控制的应用首页和隐私政策，GitHub Pages 构建成功并实际读取两页。
+2. Google Branding 保存两个 URL 和授权域名；Audience 确认 In production。
+3. 停止 LaunchAgent，把旧 Testing token 私密备份后，通过 loopback + PKCE +
+   state 校验重新授权。scope 集合保持 Tasks + openid / email；未增加 Calendar、
+   Drive、Gmail 或 Cloud Platform。
+4. 新 refresh token 与旧 token 不同，独立强制刷新成功，Tasks API 检查通过。
+   Google 未返回 `refresh_token_expires_in`；这说明没有测试模式的七天字段，
+   不能据此声称令牌永不失效。
+5. 令牌轮换触发账号绑定保护。使用新旧 access token 分别查询官方 userinfo，
+   确认 subject 指纹和邮箱相同，且旧状态确实绑定旧 token；私密备份状态后只
+   更新 Google 绑定哈希，12 条 task 映射保持不变。安全 dry-run 通过。
+6. 系统代理偶发 TLS EOF，后台 GET 原先没有重试。LaunchAgent 明确沿用当前
+   本地系统代理；引擎只为幂等 GET 增加三次有限重试，写请求不重试。97 项测试、
+   Python 编译、shell 语法和 release gate 均通过。运行版本为 `4375a1d`。
+7. 后台于 08:23:05、08:24:33、08:25:53 CST 连续成功，失败计数为 0；
+   状态回到 `awaiting_mutation_approval`，仍仅暂缓既有 10 条完成操作。
 
-完成标准是控制台 In production、新授权与刷新可用、后台实际轮次通过。
-不能仅凭按钮点击或令牌文件存在报告长期授权完成。
-
-## 当前阻塞
-
-2026-09-30 23:30 CST：电脑接口返回 Mac 已锁屏，无法自动解锁。
-已请求用户手动解锁；没有停止后台服务、替换令牌或改变 OAuth 发布状态。
+长期授权的本次验收已完成。尚未执行整机注销/重启验收；用户撤销、Google
+安全事件或其他生命周期规则仍可使 refresh token 失效。旧 token、状态和
+LaunchAgent 备份保存在私有 OAuth 备份目录，不纳入 Git。

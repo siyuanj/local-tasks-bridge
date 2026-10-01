@@ -18,7 +18,9 @@ The existing private `daily-config.json`, Google credentials, and state stay in
 one-destructive-change limit, conflict skipping, empty-source guard, and lack of
 automatic destructive approval remain. More than one completion/deletion in a
 cycle may be held; the private status records that condition. General deletion
-has not been live-tested. OAuth Testing's seven-day expiry is still a limitation.
+has not been live-tested. OAuth is now External / In production with a newly
+issued and refresh-tested token; revocation and Google lifecycle rules still
+apply.
 
 The LaunchAgent runs the named `~/Applications/Local Tasks Bridge.app` permission
 host, which requests its own Reminders grant and launches the reviewed Python
@@ -32,6 +34,13 @@ login and restarts after unexpected process exit. It runs in
 the signed-in user's session. A sleeping or offline Mac cannot synchronize; the
 loop resumes after waking/network recovery. No logout/reboot test is implied by
 loading the agent and observing scheduled cycles.
+
+This Mac routes Google through the existing local system proxy at
+`127.0.0.1:7897`. The LaunchAgent explicitly carries the matching HTTP(S) proxy
+variables because Python background processes do not reliably inherit the GUI
+proxy. Google Tasks GET requests have three bounded retries for transient
+transport failures. Mutating requests are never retried after an unknown
+transport outcome, preventing accidental duplicate writes.
 
 Start:
 
@@ -63,6 +72,8 @@ Actual acceptance: two scheduled cycles completed, read the two active My Tasks
 reminders and verified their Google title/due consistency. Stop/restart terminated
 the old launcher/Python children, and a subsequent new cycle completed.
 Ten previously completed Mac test tasks remain held for explicit bulk approval;
-other synchronization proceeds. There is no reboot/login or long-duration test.
-See STATUS for timestamps, process IDs, incomplete installation attempts, and
-remaining OAuth limitations.
+other synchronization proceeds. After Production OAuth migration and the GET
+retry update, three further scheduled cycles completed at 08:23:05, 08:24:33,
+and 08:25:53 CST with zero consecutive failures. There is no reboot/login or
+long-duration test. See STATUS for process IDs, private backups, the failed first
+runtime-link switch, and remaining limits.

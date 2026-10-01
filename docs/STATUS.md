@@ -1,5 +1,36 @@
 # Local trial status
 
+## 2026-10-01 11:14 CST (Asia/Shanghai) - 最新任务收敛与 10 条完成回写
+
+- 用户要求：解决 Google 新任务没有及时出现在 Mac，以及此前因批量安全限额暂缓的
+  “测试任务 1～10”完成回写。用户本次请求构成对这 10 条具体完成操作的明确批准；
+  没有放宽以后批量删除或完成的自动审批。
+- 执行前实测：阻塞计划先包含 3 条 `apple_reminders.create`、3 条映射回写和
+  10 条 `google_tasks.complete`；后台先安全导入 3 条新任务后，待批准计划稳定为
+  10 条完成，population=15。两次旧版本管理执行均在 Google PATCH 的 TLS 握手
+  阶段遇到 `UNEXPECTED_EOF`，计划仍为 10 条，未发生部分完成。
+- 修复：commit `2be5d0f85e6871665b31041cd2261b534cd6505f` 新增仅用于任务完成的
+  确认式重试。PATCH 传输结果未知时先 GET 单条任务；已完成则接受结果，仍活动才
+  重试。POST、DELETE 和普通 PATCH 继续不重试。自审覆盖幂等性、未知写入结果、
+  404/410 原有处理和调用范围；新增 2 个回归，网络子集 4 项及全套 95 项通过，
+  py_compile、shell 语法、release source gate、`git diff --check` 均通过。
+- 部署与真实结果：只读 release/current 已切到上述 commit，引擎 SHA-256 为
+  `fd3b74cb474d5b36a2b0814ca4f844892c6fef54872dc3eb68e6463112490066`。
+  一次性指纹批准计划为 total=10/destructive=10；真实同步 `completed=10`、
+  `deleted=0`，后台恢复。
+- 现在真实状态：11:11:42 CST 双端独立读取为 Google 活动 5、Mac 活动 5，标题
+  多重集合及哈希一致；Google 中测试任务完成 10、活动 0，Google 完成历史共 22，
+  Mac 本清单完成 10。11:12 收敛 dry-run 为 total=0/destructive=0。11:13:39
+  后台自动周期状态 `ok`、`consecutive_failures=0`、`last_error` 空、无待审批计划；
+  LaunchAgent running，PID 64608。
+- 证据：私有目录中的 `approval-20261001-110923.log`、
+  `verification-20261001-111139.json`、`convergence-20261001-111206.log` 以及管理工具
+  自动生成的批准前备份；均为本机 0600 文件，未纳入 Git。
+- 卡在哪：当前任务无阻塞。
+- 还没验证的：整机注销/重启后的启动、长期睡眠/断网恢复、通用删除仍未做真实验收；
+  本次确认式重试只覆盖完成状态，不承诺其他写操作在不稳定网络下自动重试。
+- 要用户定的：无。
+
 ## 2026-10-01 08:26 CST (Asia/Shanghai) - Production OAuth 与后台验收完成
 
 - 用户决定：明确要求执行并统一完成 Production 与长期授权；此前公开说明页和

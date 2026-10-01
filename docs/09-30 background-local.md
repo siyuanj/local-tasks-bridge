@@ -39,8 +39,10 @@ This Mac routes Google through the existing local system proxy at
 `127.0.0.1:7897`. The LaunchAgent explicitly carries the matching HTTP(S) proxy
 variables because Python background processes do not reliably inherit the GUI
 proxy. Google Tasks GET requests have three bounded retries for transient
-transport failures. Mutating requests are never retried after an unknown
-transport outcome, preventing accidental duplicate writes.
+transport failures. A completion PATCH has a separate confirmed retry: after an
+unknown transport outcome, the client reads that task and retries only if Google
+still reports it as active. POST, DELETE, and ordinary PATCH requests are not
+retried after an unknown transport outcome.
 
 Start:
 
@@ -71,9 +73,11 @@ backup, and use the previously verified manual workflow.
 Actual acceptance: two scheduled cycles completed, read the two active My Tasks
 reminders and verified their Google title/due consistency. Stop/restart terminated
 the old launcher/Python children, and a subsequent new cycle completed.
-Ten previously completed Mac test tasks remain held for explicit bulk approval;
-other synchronization proceeds. After Production OAuth migration and the GET
-retry update, three further scheduled cycles completed at 08:23:05, 08:24:33,
-and 08:25:53 CST with zero consecutive failures. There is no reboot/login or
-long-duration test. See STATUS for process IDs, private backups, the failed first
-runtime-link switch, and remaining limits.
+After Production OAuth migration and the GET retry update, three scheduled
+cycles completed at 08:23:05, 08:24:33, and 08:25:53 CST with zero consecutive
+failures. On 2026-10-01 the user approved the exact held batch of ten test-task
+completions. The confirmed completion retry in commit `2be5d0f` was deployed;
+the live run completed all ten without deleting tasks, and the next automatic
+cycle finished with status `ok`. There is no reboot/login or long-duration test.
+See STATUS for process IDs, private backups, the failed first runtime-link
+switch, and remaining limits.

@@ -21,6 +21,9 @@
 - 产品准备：README 已改为 `Local Tasks Bridge` 并说明上游来源；新增
   `docs/10-01 product-roadmap.md`，覆盖可复现发布、可安装 App、Keychain、OAuth
   分发、签名/公证、测试矩阵和当前 public-release no-go 条件。
+- 独立验收：从私有 GitHub 仓库全新克隆 `da3678ae74df5f51e7e2a72b58171ddfb5714a12`，
+  `git fsck --full --strict`、无 override 的发布来源门禁及全套 97 项测试通过；克隆
+  工作区保持 clean。该临时克隆未读取本机私有配置或真实待办。
 - 卡在哪：当前私有仓库无阻塞。
 - 还没验证的：面向他人的安装包、Keychain、签名/公证、干净 Mac 安装、升级/卸载、
   广泛 OAuth 分发要求尚未完成；当前仍是本人 Mac 已验收的本地产品基线。

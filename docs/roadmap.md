@@ -53,6 +53,22 @@ safety and correctness come before new features.
 - **More real-account acceptance testing:** logout and restart, long sleep and
   wake, offline periods, general deletion in both directions, upgrades and
   uninstalling on a clean Mac, and Intel Macs.
+- **A promo video in the style of Google's product videos** (60–90 seconds:
+  clean backgrounds, bright primary colours, simple motion, one short caption
+  per idea) for the website and README. It shows what the app does: setup, a
+  task added in Google Tasks appearing in Reminders and the reverse, completions
+  and edits syncing, and the safety review of held deletions. New features will
+  keep arriving, so build it to be extended rather than re-edited:
+  - One self-contained scene per feature, plus a shared intro and outro, a
+    shared style (colours, type, motion timing) and a scene list that sets the
+    order. Adding a feature means adding one scene and one line in the list.
+  - Generated from code (for example Remotion or HyperFrames) and kept in the
+    repository, so the video re-renders when the UI or text changes.
+  - Captions in English and Chinese from one text file per language; renders
+    16:9 for the website and a short vertical cut for social media.
+  - Screens recorded with demo lists and tasks only, never personal data. Use
+    the Google Tasks name and icon only as its brand guidelines allow, and never
+    suggest that Google made or endorses the app.
 
 ## Research
 

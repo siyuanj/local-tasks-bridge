@@ -10,6 +10,7 @@ import io
 import json
 import os
 import plistlib
+import re
 import stat
 import subprocess
 import sys
@@ -1363,6 +1364,46 @@ class CommandLineTests(unittest.TestCase):
             self.assertEqual(usage.returncode, 0)
             for command in ("status", "approvals", "migrate", "sync-now", "agent"):
                 self.assertIn(command, usage.stdout)
+
+
+class WebsiteTests(unittest.TestCase):
+    """site/ is the home page and privacy policy registered in Google OAuth branding."""
+
+    SITE = ROOT / "site"
+    SITE_URL = "https://siyuanj.github.io/local-tasks-bridge/"
+    PAGES = ("index.html", "privacy/index.html", "zh/index.html", "zh/privacy/index.html")
+
+    @staticmethod
+    def local_links(page: Path) -> list:
+        links = re.findall(r'(?:href|src)="([^"]*)"', page.read_text(encoding="utf-8"))
+        return [link for link in links if not re.match(r"(?:[a-z]+:|#|//)", link)]
+
+    def test_every_page_exists_in_both_languages(self) -> None:
+        for name in self.PAGES:
+            page = self.SITE / name
+            self.assertTrue(page.is_file(), name)
+            text = page.read_text(encoding="utf-8")
+            self.assertIn('<html lang="zh-Hans"' if name.startswith("zh/") else '<html lang="en"', text, name)
+
+    def test_relative_links_resolve(self) -> None:
+        for page in sorted(self.SITE.rglob("*.html")):
+            for link in self.local_links(page):
+                target = (page.parent / link.split("#", 1)[0]).resolve()
+                if link.endswith("/") or target.is_dir():
+                    target = target / "index.html"
+                with self.subTest(page=str(page.relative_to(ROOT)), link=link):
+                    self.assertTrue(target.is_file())
+                    self.assertTrue(str(target).startswith(str(self.SITE.resolve())))
+
+    def test_published_links_point_at_pages_that_exist(self) -> None:
+        app_info = (ROOT / "macos" / "App" / "AppInfo.swift").read_text(encoding="utf-8")
+        self.assertIn(f'URL(string: "{self.SITE_URL}privacy/")', app_info)
+        for doc in ("README.md", "README.zh-CN.md", "PRIVACY.md", "PRIVACY.zh-CN.md", "docs/google-cloud-setup.md"):
+            text = (ROOT / doc).read_text(encoding="utf-8")
+            for path in re.findall(re.escape(self.SITE_URL) + r"([A-Za-z0-9/_-]*)", text):
+                with self.subTest(doc=doc, path=path):
+                    page = self.SITE / path / "index.html" if not path or path.endswith("/") else self.SITE / path
+                    self.assertTrue(page.is_file())
 
 
 if __name__ == "__main__":

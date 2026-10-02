@@ -1,6 +1,6 @@
 # Local Tasks Bridge
 
-[English](README.md) · **简体中文**
+[English](README.md) · **简体中文** · [官网](https://siyuanj.github.io/local-tasks-bridge/zh/)
 
 在你的 Mac 上完成 Apple 提醒事项与 Google Tasks（Google 任务）之间的双向同步，全程不经过任何第三方服务器。
 

@@ -80,6 +80,7 @@ config folder and a test list — or better, the end-to-end harness.
 | `tests/` | Unit and regression tests (`test_engine.py`, `test_local_safety.py`) and end-to-end scenarios (`test_e2e_sync.py`) |
 | `tests/e2e/` | The end-to-end harness: fake Google server and fake Reminders helpers |
 | `scripts/` | Build, packaging, Python download, installer tests and the release source gate |
+| `site/` | The website: home page and privacy policy in English and Chinese, plain HTML published to GitHub Pages |
 | `install.sh` | The installer and uninstaller |
 | `docs/` | Documentation in English and Chinese; [app-engine-contract.md](docs/app-engine-contract.md) is the interface between app and engine |
 

@@ -85,7 +85,8 @@ fails without the change.
 | `scripts/` | `build-app.sh`, `package-release.sh`, `fetch-python.sh`, `test-install.sh`, `check-release-source.sh` |
 | `install.sh` | Installer, updater and uninstaller |
 | `docs/` | Documentation, in English and Chinese pairs (`x.md`, `x.zh-CN.md`) |
-| `.github/` | CI, release workflow, issue and pull request templates |
+| `site/` | Static website (home page and privacy policy, English / Chinese), published by `.github/workflows/pages.yml` |
+| `.github/` | CI, release and website workflows, issue and pull request templates |
 
 ## Required checks
 

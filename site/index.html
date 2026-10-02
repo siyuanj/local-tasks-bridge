@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Local Tasks Bridge — Apple Reminders ⇄ Google Tasks on your Mac</title>
+  <meta name="description" content="Local Tasks Bridge is a free, open-source macOS menu bar app that keeps the Apple Reminders lists you choose in two-way sync with Google Tasks. It runs only on your Mac.">
+  <link rel="icon" type="image/png" href="assets/favicon-64.png">
+  <link rel="stylesheet" href="assets/style.css">
+  <link rel="alternate" hreflang="zh-Hans" href="zh/">
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <a class="brand" href="./"><img src="assets/icon-256.png" alt="">Local Tasks Bridge</a>
+    <nav class="links">
+      <a href="#features">Features</a>
+      <a href="#install">Install</a>
+      <a href="#google">Google access</a>
+      <a href="privacy/">Privacy</a>
+      <a href="https://github.com/siyuanj/local-tasks-bridge">GitHub</a>
+      <a href="zh/" lang="zh-Hans">中文</a>
+    </nav>
+  </header>
+
+  <div class="hero">
+    <img src="assets/icon-256.png" alt="Local Tasks Bridge app icon">
+    <div>
+      <h1>Apple Reminders and Google Tasks, in sync on your Mac.</h1>
+      <p class="lead">Local Tasks Bridge is a free, open-source menu bar app that keeps the Reminders
+        lists you choose in two-way sync with Google Tasks. It runs only on your Mac — there is no
+        server in between.</p>
+      <div class="buttons">
+        <a class="button primary" href="#install">Install</a>
+        <a class="button" href="https://github.com/siyuanj/local-tasks-bridge">Source code</a>
+      </div>
+    </div>
+  </div>
+
+  <section id="features">
+    <h2>What it does</h2>
+    <div class="grid">
+      <div class="card"><h3>Two-way sync of chosen lists</h3>
+        <p>New tasks, title and due-date edits, completions and deletions flow both ways between the
+        Reminders lists you select and Google Tasks lists of the same name.</p></div>
+      <div class="card"><h3>Your Google tasks on the Mac</h3>
+        <p>Tasks added in Google Tasks, Gmail, Google Calendar or Gemini show up in Reminders, the
+        Reminders widget and Siri.</p></div>
+      <div class="card"><h3>Safe by design</h3>
+        <p>Large batches of deletions or completions wait for your approval, the first sync never
+        deletes anything, and a sync never switches Google or Apple accounts silently.</p></div>
+      <div class="card"><h3>Private</h3>
+        <p>Sign-in, sync state and logs stay on your Mac. Task data goes only between your Mac and
+        Google's official API — never to the developer.</p></div>
+      <div class="card"><h3>Native menu bar app</h3>
+        <p>A setup assistant, status at a glance, Sync Now, Pause, and a review window for pending
+        changes. Local edits upload within seconds.</p></div>
+      <div class="card"><h3>English and Chinese</h3>
+        <p>The app, the command-line tool and the documentation are available in English and
+        Simplified Chinese.</p></div>
+    </div>
+  </section>
+
+  <section id="how">
+    <h2>How it works</h2>
+    <p class="flow"><span class="box">Apple Reminders</span><span class="arrow">⇄</span>
+      <span class="box">EventKit on your Mac</span><span class="arrow">⇄</span>
+      <span class="box">Local Tasks Bridge</span><span class="arrow">⇄</span>
+      <span class="box">Google Tasks API</span></p>
+    <p>Google cannot read iCloud Reminders directly, so the bridge runs in your macOS user session:
+      it reads and writes Reminders through Apple's EventKit framework and talks to the Google Tasks
+      API with your own sign-in. Every sync is planned first; a plan that would delete or complete
+      more items than the safety limit is held until you approve exactly that set.</p>
+  </section>
+
+  <section id="install">
+    <h2>Install</h2>
+    <p>Requirements: macOS 13 Ventura or later (Apple silicon or Intel), Reminders with iCloud, and a
+      Google account.</p>
+    <h3>One-line installer</h3>
+<pre><code>curl -fsSL https://raw.githubusercontent.com/siyuanj/local-tasks-bridge/main/install.sh | bash</code></pre>
+    <div class="note">In mainland China, <code>curl</code> does not use the macOS system proxy. Run
+      <code>export https_proxy=http://127.0.0.1:7890</code> first (use the port of your proxy app), and
+      set the same proxy on the app's sign-in step.</div>
+    <h3>Other ways</h3>
+    <ul>
+      <li>Download the zip for your Mac from
+        <a href="https://github.com/siyuanj/local-tasks-bridge/releases">GitHub Releases</a>. Builds are
+        not notarized yet, so macOS asks you to confirm the first launch in System Settings → Privacy
+        &amp; Security.</li>
+      <li>Build from source with the Xcode Command Line Tools:
+        <code>git clone https://github.com/siyuanj/local-tasks-bridge.git &amp;&amp; cd local-tasks-bridge &amp;&amp; make install</code>.</li>
+    </ul>
+    <p>The first launch opens a setup assistant: allow Reminders access, choose how to sign in to
+      Google, pick your lists, review what the first sync will do, and start syncing.</p>
+  </section>
+
+  <section id="google">
+    <h2>Google access</h2>
+    <p>Local Tasks Bridge requests only these Google permissions:</p>
+    <ul>
+      <li><code>https://www.googleapis.com/auth/tasks</code> — view and manage your Google Tasks, to
+        synchronize the lists you select;</li>
+      <li><code>openid</code> and <code>email</code> — to recognize which Google account a sync belongs
+        to and show it to you.</li>
+    </ul>
+    <p>It does not request access to Gmail, Google Calendar, Google Drive or Google Cloud data. The
+      Tasks permission covers your whole account; the app itself reads and writes only the lists you
+      select.</p>
+    <table>
+      <tr><th>Sign-in method</th><th>What you need</th><th>Notes</th></tr>
+      <tr><td>Quick sign-in</td><td>Nothing — included in release builds</td>
+        <td>Google may show “Google hasn't verified this app” until the app completes Google's
+          verification. Your data still never reaches the developer.</td></tr>
+      <tr><td>Your own Google Cloud client</td><td>About 10 minutes in a free Google Cloud project
+        (<a href="https://github.com/siyuanj/local-tasks-bridge/blob/main/docs/google-cloud-setup.md">guide</a>)</td>
+        <td>No user limits; your own API quota.</td></tr>
+    </table>
+    <p>Local Tasks Bridge's use and transfer of information received from Google APIs adheres to the
+      <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services
+      User Data Policy</a>, including the Limited Use requirements. Read the
+      <a href="privacy/">privacy policy</a> for details. You can revoke access at any time at
+      <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>.</p>
+  </section>
+
+  <section id="support">
+    <h2>Support</h2>
+    <p>Questions and bug reports: <a href="https://github.com/siyuanj/local-tasks-bridge/issues">GitHub
+      Issues</a>. Please never post task content, tokens or logs publicly. Security issues:
+      <a href="https://github.com/siyuanj/local-tasks-bridge/security/advisories/new">report privately</a>.</p>
+  </section>
+
+  <footer>
+    <p>Local Tasks Bridge is open-source software under the MIT License, maintained by Siyuan Jiang. It
+      is a fork of <a href="https://github.com/syncweave-labs/reminders-task-bridge">syncweave-labs/reminders-task-bridge</a>.</p>
+    <p>Apple and Reminders are trademarks of Apple Inc. Google and Google Tasks are trademarks of Google
+      LLC. This project is not affiliated with or endorsed by Apple or Google.</p>
+    <p><a href="privacy/">Privacy policy</a> · <a href="zh/" lang="zh-Hans">中文</a></p>
+  </footer>
+</div>
+</body>
+</html>

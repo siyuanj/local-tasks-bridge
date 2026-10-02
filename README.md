@@ -1,6 +1,6 @@
 # Local Tasks Bridge
 
-**English** · [简体中文](README.zh-CN.md)
+**English** · [简体中文](README.zh-CN.md) · [Website](https://siyuanj.github.io/local-tasks-bridge/)
 
 Two-way sync between Apple Reminders and Google Tasks that runs entirely on
 your Mac.

@@ -12,7 +12,7 @@ enum AppInfo {
     static let latestReleaseAPIURL = URL(string: "https://api.github.com/repos/siyuanj/local-tasks-bridge/releases/latest")!
     static let releasesURL = URL(string: "https://github.com/siyuanj/local-tasks-bridge/releases")!
     static let googleTasksURL = URL(string: "https://tasks.google.com")!
-    static let privacyPolicyURL = URL(string: "https://siyuanj.github.io/local-tasks-bridge-site/privacy/")!
+    static let privacyPolicyURL = URL(string: "https://siyuanj.github.io/local-tasks-bridge/privacy/")!
     static let remindersBundleIdentifier = "com.apple.reminders"
 
     static var version: String {

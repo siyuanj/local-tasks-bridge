@@ -63,6 +63,7 @@ python3 -B engine/local_tasks_bridge.py --config ~/ltb-dev/config.json status
 | `tests/` | 单元测试和回归测试（`test_engine.py`、`test_local_safety.py`），以及端到端场景（`test_e2e_sync.py`） |
 | `tests/e2e/` | 端到端测试工具：模拟 Google 服务器和模拟提醒事项辅助程序 |
 | `scripts/` | 构建、打包、下载 Python、安装脚本测试，以及发布源码检查 |
+| `site/` | 官网：中英文的产品主页和隐私政策，纯 HTML，发布到 GitHub Pages |
 | `install.sh` | 安装与卸载脚本 |
 | `docs/` | 中英文文档；[app-engine-contract.md](docs/app-engine-contract.md) 是 App 与引擎之间的接口 |
 

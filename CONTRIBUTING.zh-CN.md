@@ -64,6 +64,7 @@ python3 -B engine/local_tasks_bridge.py --config ~/ltb-dev/config.json status
 | `tests/e2e/` | 端到端测试工具：模拟 Google 服务器和模拟提醒事项辅助程序 |
 | `scripts/` | 构建、打包、下载 Python、安装脚本测试，以及发布源码检查 |
 | `site/` | 官网：中英文的产品主页和隐私政策，纯 HTML，发布到 GitHub Pages |
+| `promo/` | 宣传视频，用 Remotion 制作；每个功能是一个场景（见 `promo/README.md`） |
 | `install.sh` | 安装与卸载脚本 |
 | `docs/` | 中英文文档；[app-engine-contract.md](docs/app-engine-contract.md) 是 App 与引擎之间的接口 |
 

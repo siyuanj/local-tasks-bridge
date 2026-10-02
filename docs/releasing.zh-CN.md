@@ -87,7 +87,7 @@ Local Tasks Bridge 遵循[语义化版本](https://semver.org/lang/zh-CN/)：
 
 要解除上限并去掉警告：
 
-1. **品牌信息。** 在 Google Auth Platform → Branding 中，保留应用名称 *Local Tasks Bridge*，添加徽标（120 × 120 像素）、支持邮箱、首页 `https://siyuanj.github.io/local-tasks-bridge/`、隐私政策 `https://siyuanj.github.io/local-tasks-bridge/privacy/` 和已获授权的网域 `siyuanj.github.io`。首页必须说明应用的功能、链接到隐私政策，并且无需登录即可公开访问。隐私政策必须说明访问了哪些 Google 数据、如何使用、存储和共享，并包含“有限使用”（Limited Use）声明；仓库中的 [PRIVACY.zh-CN.md](../PRIVACY.zh-CN.md) 就是它的完整版——请让两者都与 App 的实际行为保持一致。
+1. **品牌信息。** 在 Google Auth Platform → Branding 中，保留应用名称 *Local Tasks Bridge*，添加徽标（120 × 120 像素）、支持邮箱、首页 `https://siyuanj.github.io/local-tasks-bridge-site/`、隐私政策 `https://siyuanj.github.io/local-tasks-bridge-site/privacy/` 和已获授权的网域 `siyuanj.github.io`。首页必须说明应用的功能、链接到隐私政策，并且无需登录即可公开访问。隐私政策必须说明访问了哪些 Google 数据、如何使用、存储和共享，并包含“有限使用”（Limited Use）声明；仓库中的 [PRIVACY.zh-CN.md](../PRIVACY.zh-CN.md) 就是它的完整版——请让两者都与 App 的实际行为保持一致。
 2. **网域所有权。** 使用 Cloud 项目的所有者（Owner）或编辑者（Editor）账号，在 [Google Search Console](https://search.google.com/search-console) 中验证网站。对于 GitHub Pages 网站，可以添加网址前缀资源 `https://siyuanj.github.io/`，并在网站模板中用 HTML 标记的方式验证。如果 Google 坚持要求网域资源，请为这些页面使用自定义域名。
 3. **数据访问。** 添加 App 申请的权限范围：`…/auth/tasks`、`openid` 和 `…/auth/userinfo.email`。为 Tasks 权限写一段理由：App 执行双向同步——会创建、编辑、完成和删除任务——所以只读权限不够；数据只在用户自己的 Mac 上处理，从不发送给开发者。
 4. **演示视频。** 录一段简短的视频，以“不公开”方式上传到 YouTube。视频应展示：设置向导中选择共享客户端；英文的 Google 授权页面，并且浏览器地址栏中能看到 OAuth 客户端 ID；授予权限的过程；一个任务在两个方向上的同步；以及数据保存在哪里（只在 Mac 上）。
@@ -119,13 +119,13 @@ Local Tasks Bridge 遵循[语义化版本](https://semver.org/lang/zh-CN/)：
 - [ ] **历史中的个人数据：** 在旧提交中搜索绝对路径、真实的任务标题和邮箱地址（例如 `git log -p --all | grep -nE '/Users/[^/]+/'`）。
 - [ ] **标签：** 不要推送 `prod/icloud-reminders-google-sync/…` 这类本地部署标签；只推送 `vX.Y.Z` 标签。
 - [ ] **链接：** 问题模板中的安全链接（`.github/ISSUE_TEMPLATE/config.yml`）以及所有文档链接都必须指向 `siyuanj/local-tasks-bridge`。
-- [ ] **仓库设置：** 描述、网站（`https://siyuanj.github.io/local-tasks-bridge/`）、主题标签（`macos`、`apple-reminders`、`google-tasks`、`sync`、`menu-bar-app`）。
+- [ ] **仓库设置：** 描述、网站（`https://siyuanj.github.io/local-tasks-bridge-site/`）、主题标签（`macos`、`apple-reminders`、`google-tasks`、`sync`、`menu-bar-app`）。
 - [ ] **安全设置：** 开启 *Private vulnerability reporting*（Settings → Security → Advisories）、Dependabot 警报、密钥扫描（secret scanning）和推送保护（push protection）。
 - [ ] **`main` 的分支保护：** 要求通过拉取请求合并且 CI 通过，禁止强制推送。
 - [ ] **Actions：** 保持所有 action 固定到完整的提交 SHA，工作流权限保持最小；确保密钥只被标签触发的发布工作流使用。
 - [ ] **修改可见性**（Settings → General → Danger Zone）。
 - [ ] **发布 v1.0.0**，并在一个全新的 macOS 用户账号中测试一行命令安装和 `install.sh` 的原始网址。
-- [ ] **网站页面：** `siyuanj.github.io` 上的 OAuth 首页和隐私政策应当描述 1.0（多个列表、共享客户端）——请与 [PRIVACY.zh-CN.md](../PRIVACY.zh-CN.md) 对照。
+- [ ] **网站页面：** 主页和隐私政策放在独立的公开仓库 [siyuanj/local-tasks-bridge-site](https://github.com/siyuanj/local-tasks-bridge-site)（GitHub Pages，`https://siyuanj.github.io/local-tasks-bridge-site/`）。它们是 Google OAuth 品牌信息中登记的网址，请与 [PRIVACY.zh-CN.md](../PRIVACY.zh-CN.md) 保持一致。
 
 ## Homebrew tap（以后）
 

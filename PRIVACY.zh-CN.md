@@ -6,7 +6,7 @@
 
 Local Tasks Bridge 是一款在你的 Mac 上运行、在 Apple 提醒事项与 Google Tasks 之间同步的开源软件。本政策用浅白的语言说明它会接触哪些数据、这些数据去往何处，以及你如何掌控它们。简而言之：**你的数据只留在你的 Mac 上，以及 Apple 和 Google 那里，绝不会发送给维护者或任何其他人。**
 
-本政策的公开版本位于 <https://siyuanj.github.io/local-tasks-bridge/privacy/>（英文）。如中英文版本有出入，以英文版为准。
+本政策的公开版本位于 <https://siyuanj.github.io/local-tasks-bridge-site/privacy/>（英文）。如中英文版本有出入，以英文版为准。
 
 ## 由谁负责
 

@@ -36,8 +36,8 @@
    - **Finish（完成）：** 同意《Google API Services: User Data Policy》（Google API 服务用户数据政策），点按 **Continue（继续）**，再点按 **Create（创建）**。
 2. 打开 **Branding（品牌塑造）**（<https://console.cloud.google.com/auth/branding>），核对应用名称和支持邮箱。不要上传徽标：添加徽标会让应用需要经过 Google 的品牌验证。
 3. 如果下一步中的 **Publish app（发布应用）** 按钮一直是灰色，说明 Google 要求先提供应用的公开页面。请在 **App domain（应用网域）** 和 **Authorized domains（已获授权的网域）** 中填写：
-   - **Application home page（应用首页）：** `https://siyuanj.github.io/local-tasks-bridge/`
-   - **Application privacy policy link（应用隐私权政策链接）：** `https://siyuanj.github.io/local-tasks-bridge/privacy/`
+   - **Application home page（应用首页）：** `https://siyuanj.github.io/local-tasks-bridge-site/`
+   - **Application privacy policy link（应用隐私权政策链接）：** `https://siyuanj.github.io/local-tasks-bridge-site/privacy/`
    - **Authorized domain（已获授权的网域）：** `siyuanj.github.io`
 
    这是本项目介绍这款纯本地软件的公开页面，对你个人的客户端同样适用；你也可以换成自己的页面。最后点按 **Save（保存）**。

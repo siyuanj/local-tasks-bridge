@@ -11,7 +11,7 @@ short version: **your data stays on your Mac and with Apple and Google. It is
 never sent to the maintainer or to anyone else.**
 
 The public version of this policy is at
-<https://siyuanj.github.io/local-tasks-bridge/privacy/>.
+<https://siyuanj.github.io/local-tasks-bridge-site/privacy/>.
 
 ## Who is responsible
 

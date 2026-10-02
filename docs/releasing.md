@@ -150,8 +150,8 @@ To lift the cap and remove the warning:
 
 1. **Branding.** In Google Auth Platform → Branding, keep the app name
    *Local Tasks Bridge*, add a logo (120 × 120 px), the support e-mail, the home
-   page `https://siyuanj.github.io/local-tasks-bridge/`, the privacy policy
-   `https://siyuanj.github.io/local-tasks-bridge/privacy/` and the authorized
+   page `https://siyuanj.github.io/local-tasks-bridge-site/`, the privacy policy
+   `https://siyuanj.github.io/local-tasks-bridge-site/privacy/` and the authorized
    domain `siyuanj.github.io`. The home page must describe what the app does,
    link to the privacy policy and be publicly reachable without signing in.
    The privacy policy must say what Google data is accessed and how it is
@@ -233,7 +233,7 @@ quota covers only a few dozen active users.
       (`.github/ISSUE_TEMPLATE/config.yml`) and every documentation link must
       point to `siyuanj/local-tasks-bridge`.
 - [ ] **Repository settings:** description, website
-      (`https://siyuanj.github.io/local-tasks-bridge/`), topics (`macos`,
+      (`https://siyuanj.github.io/local-tasks-bridge-site/`), topics (`macos`,
       `apple-reminders`, `google-tasks`, `sync`, `menu-bar-app`).
 - [ ] **Security settings:** enable *Private vulnerability reporting*
       (Settings → Security → Advisories), Dependabot alerts, secret scanning
@@ -246,9 +246,10 @@ quota covers only a few dozen active users.
 - [ ] **Change the visibility** (Settings → General → Danger Zone).
 - [ ] **Publish v1.0.0** and test the one-line installer and the raw
       `install.sh` URL from a clean macOS user account.
-- [ ] **Website pages:** the OAuth home page and privacy policy on
-      `siyuanj.github.io` should describe 1.0 (several lists, the shared
-      client) — compare them with [PRIVACY.md](../PRIVACY.md).
+- [ ] **Website pages:** the home page and privacy policy live in the separate public repository
+      [siyuanj/local-tasks-bridge-site](https://github.com/siyuanj/local-tasks-bridge-site) (GitHub Pages,
+      `https://siyuanj.github.io/local-tasks-bridge-site/`). Keep them in line with
+      [PRIVACY.md](../PRIVACY.md); they are the URLs registered in the Google OAuth branding.
 
 ## A Homebrew tap (later)
 

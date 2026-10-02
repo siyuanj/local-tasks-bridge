@@ -53,8 +53,8 @@ lists the Chinese menu names.
    app subject to Google's brand verification.
 3. If **Publish app** in the next step stays disabled, Google wants the app's
    public pages first. Fill in, under **App domain** and **Authorized domains**:
-   - **Application home page:** `https://siyuanj.github.io/local-tasks-bridge/`
-   - **Application privacy policy link:** `https://siyuanj.github.io/local-tasks-bridge/privacy/`
+   - **Application home page:** `https://siyuanj.github.io/local-tasks-bridge-site/`
+   - **Application privacy policy link:** `https://siyuanj.github.io/local-tasks-bridge-site/privacy/`
    - **Authorized domain:** `siyuanj.github.io`
 
    These are the project's public pages describing this same local-only

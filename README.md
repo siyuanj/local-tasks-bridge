@@ -14,9 +14,10 @@ credential and sync record stays in your home folder.
 > [!NOTE]
 > **Version 1.0.** Builds are ad-hoc signed and not yet notarized by Apple, so
 > macOS asks you to confirm the first launch of a copy downloaded with a
-> browser ([steps below](#option-b-download-from-releases)). The one-line
-> installer and the Releases page work once the GitHub repository and its first
-> release are published — until then, [build from source](#option-c-build-from-source).
+> browser ([steps below](#option-b-download-from-releases)). Version 1.0.0 does
+> not include the shared Google sign-in yet: choose **your own Google Cloud
+> client** in the setup assistant ([setup guide](docs/google-cloud-setup.md)).
+> Quick sign-in arrives in a later release, once Google has verified the app.
 
 ## Features
 
@@ -190,8 +191,8 @@ steps:
    reminders — click **Allow**. macOS grants access to all lists, but the bridge
    reads and writes only the lists you select in step 4.
 2. **Sign-in method.** Choose **Quick sign-in**, the shared client built into
-   release builds (nothing to set up), or **Use my own Google Cloud OAuth
-   client** and import the JSON file you downloaded from Google with **Choose
+   release builds that include it (nothing to set up; not yet in 1.0.0), or
+   **Use my own Google Cloud OAuth client** and import the JSON file you downloaded from Google with **Choose
    Client JSON…**. See the [comparison](#choosing-a-sign-in-method). In
    mainland China, first open **Network settings (proxy)** on this step and
    enter your proxy, then sign in (see

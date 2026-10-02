@@ -476,7 +476,7 @@ verify_checksum() {
   actual="$(shasum -a 256 "$file" | awk '{ print $1 }')"
   if [ "$actual" != "$expected" ]; then
     die "Checksum mismatch for $name (expected $expected, got $actual). The file may be damaged or tampered with; nothing was changed." \
-      "$name 的校验值不匹配（应为 $expected，实际为 $actual）。文件可能已损坏或被篡改；没有做任何更改。"
+      "$name 的校验值不匹配（应为 ${expected}，实际为 ${actual}）。文件可能已损坏或被篡改；没有做任何更改。"
   fi
   say "Verified SHA-256 of $name." "已校验 $name 的 SHA-256。"
 }
@@ -485,7 +485,7 @@ verify_checksum() {
 proxy_hint() {
   local current="${https_proxy:-${HTTPS_PROXY:-${all_proxy:-${ALL_PROXY:-}}}}"
   if [ -n "$current" ]; then
-    say "Downloads use the proxy $current; check that it is running." "下载使用代理 $current；请确认代理软件正在运行。" >&2
+    say "Downloads use the proxy $current; check that it is running." "下载使用代理 ${current}；请确认代理软件正在运行。" >&2
     return 0
   fi
   say "Tip: curl does not use the macOS system proxy. If you need a proxy to reach GitHub (common in mainland China), set it first, for example:" \
@@ -511,7 +511,7 @@ fetch_release() {
   asset="${ASSET_PREFIX}-${HOST_ARCH}.zip"
   require_allowed_url "$base/"
 
-  step "Downloading $asset…" "正在下载 $asset…"
+  step "Downloading ${asset}…" "正在下载 ${asset}…"
   if ! download "$base/SHA256SUMS" "$WORK_DIR/SHA256SUMS"; then
     proxy_hint
     die "Could not download SHA256SUMS from $base. Check your network connection and that the release exists." \
@@ -519,7 +519,7 @@ fetch_release() {
   fi
   if ! download "$base/$asset" "$WORK_DIR/$asset" 1; then
     proxy_hint
-    die "Could not download $asset from $base." "无法从 $base 下载 $asset。"
+    die "Could not download $asset from $base." "无法从 $base 下载 ${asset}。"
   fi
   verify_checksum "$WORK_DIR/$asset" "$WORK_DIR/SHA256SUMS" "$asset"
   ZIP_FILE="$WORK_DIR/$asset"
@@ -589,7 +589,7 @@ build_from_source() {
     if [ -n "$REQUESTED_VERSION" ]; then
       clone_args+=(--branch "v$REQUESTED_VERSION")
     fi
-    step "Downloading the source code of $REPOSITORY…" "正在下载 $REPOSITORY 的源代码…"
+    step "Downloading the source code of ${REPOSITORY}…" "正在下载 $REPOSITORY 的源代码…"
     if ! git "${clone_args[@]}" "https://github.com/$REPOSITORY.git" "$WORK_DIR/source"; then
       proxy_hint
       die "Could not clone https://github.com/$REPOSITORY.git." "无法克隆 https://github.com/$REPOSITORY.git。"
@@ -606,12 +606,12 @@ build_from_source() {
     build_args+=(--python "$WORK_DIR/python")
   fi
 
-  step "Building Local Tasks Bridge from $src…" "正在从 $src 构建 Local Tasks Bridge…"
+  step "Building Local Tasks Bridge from ${src}…" "正在从 $src 构建 Local Tasks Bridge…"
   if ! /bin/bash "$src/scripts/build-app.sh" "${build_args[@]}"; then
     die "The build failed (see the messages above); nothing was changed." "构建失败（见上方信息）；没有做任何更改。"
   fi
   BUILT_APP="$WORK_DIR/build/$APP_BUNDLE_NAME"
-  [ -d "$BUILT_APP" ] || die "The build did not produce $APP_BUNDLE_NAME." "构建没有生成 $APP_BUNDLE_NAME。"
+  [ -d "$BUILT_APP" ] || die "The build did not produce $APP_BUNDLE_NAME." "构建没有生成 ${APP_BUNDLE_NAME}。"
 }
 
 # ---------------------------------------------------------------------------
@@ -639,7 +639,7 @@ validate_bundle() {
   id="$(bundle_id_of "$app" || true)"
   if [ "$id" != "$BUNDLE_ID" ]; then
     die "The new app has the bundle identifier '${id:-none}' instead of $BUNDLE_ID; nothing was changed." \
-      "新 App 的标识符是 ${id:-无}，而不是 $BUNDLE_ID；没有做任何更改。"
+      "新 App 的标识符是 ${id:-无}，而不是 ${BUNDLE_ID}；没有做任何更改。"
   fi
   if [ ! -x "$app/Contents/MacOS/LocalTasksBridge" ] || [ ! -x "$app/Contents/Resources/bin/ltb" ]; then
     die "The new app is incomplete (Contents/MacOS/LocalTasksBridge or Contents/Resources/bin/ltb is missing); nothing was changed." \
@@ -649,19 +649,19 @@ validate_bundle() {
   [ -n "$version" ] || die "The new app has no version number; nothing was changed." "新 App 没有版本号；没有做任何更改。"
   if [ -n "$REQUESTED_VERSION" ] && [ "$version" != "$REQUESTED_VERSION" ]; then
     die "Expected version $REQUESTED_VERSION but the app is version $version; nothing was changed." \
-      "期望版本 $REQUESTED_VERSION，但 App 的版本是 $version；没有做任何更改。"
+      "期望版本 ${REQUESTED_VERSION}，但 App 的版本是 ${version}；没有做任何更改。"
   fi
 
   if ! output="$(run_with_timeout 30 "$app/Contents/MacOS/LocalTasksBridge" --version 2>&1)"; then
     die "The new app failed its self-check (LocalTasksBridge --version); nothing was changed. Is this the right download for this Mac ($HOST_ARCH)?" \
-      "新 App 未通过自检（LocalTasksBridge --version）；没有做任何更改。请确认下载的是适用于这台 Mac（$HOST_ARCH）的版本。"
+      "新 App 未通过自检（LocalTasksBridge --version）；没有做任何更改。请确认下载的是适用于这台 Mac（${HOST_ARCH}）的版本。"
   fi
   first_line="${output%%$'\n'*}"
   case "$output" in
     *"$version"*) ;;
     *)
       die "The app reported '$first_line' instead of version $version; nothing was changed." \
-        "App 报告的版本（$first_line）与 $version 不一致；没有做任何更改。"
+        "App 报告的版本（${first_line}）与 $version 不一致；没有做任何更改。"
       ;;
   esac
 
@@ -695,7 +695,7 @@ prepare_dest_dir() {
   fi
   if ! mkdir -p "$dest" 2>/dev/null; then
     die "Could not create $dest. Choose a folder you can write to with --dest; this installer never uses sudo." \
-      "无法创建 $dest。请用 --dest 选择一个你有写入权限的目录；安装程序从不使用 sudo。"
+      "无法创建 ${dest}。请用 --dest 选择一个你有写入权限的目录；安装程序从不使用 sudo。"
   fi
   dest="$(cd "$dest" && pwd -P)"
   if [ ! -w "$dest" ]; then
@@ -727,7 +727,7 @@ inspect_target() {
       ;;
     *)
       die "$TARGET_APP belongs to another app ($id). Move it away or choose another folder with --dest." \
-        "$TARGET_APP 属于另一个 App（$id）。请把它移走，或用 --dest 选择其他目录。"
+        "$TARGET_APP 属于另一个 App（${id}）。请把它移走，或用 --dest 选择其他目录。"
       ;;
   esac
 }
@@ -744,13 +744,13 @@ retire_legacy_app() {
   local old="$1" trash="$HOME/.Trash" name
   name="Local Tasks Bridge (trial build $(date +%Y%m%d-%H%M%S)).app"
   if mkdir -p "$trash" 2>/dev/null && mv "$old" "$trash/$name" 2>/dev/null; then
-    say "Moved the earlier trial build to the Trash ($name)." "已将早期试用版移到废纸篓（$name）。"
+    say "Moved the earlier trial build to the Trash ($name)." "已将早期试用版移到废纸篓（${name}）。"
     say "Open Local Tasks Bridge to import its settings, Google sign-in, and sync map." \
       "打开 Local Tasks Bridge 即可导入它的设置、Google 登录和同步对应关系。"
   else
     KEEP_STAGING=1
     warn "Could not move the earlier trial build to the Trash; it was kept at $old." \
-      "无法将早期试用版移到废纸篓；它保留在 $old。"
+      "无法将早期试用版移到废纸篓；它保留在 ${old}。"
   fi
 }
 
@@ -784,7 +784,7 @@ link_cli() {
     case "$current" in
       */Contents/Resources/bin/ltb) ;;
       *)
-        warn "$link already points to $current; leaving it unchanged." "$link 已经指向 $current；保持不变。"
+        warn "$link already points to $current; leaving it unchanged." "$link 已经指向 ${current}；保持不变。"
         return 0
         ;;
     esac
@@ -795,7 +795,7 @@ link_cli() {
 
   if ! mkdir -p "$bin_dir" || ! ln -sfn "$TARGET_APP/Contents/Resources/bin/ltb" "$link"; then
     warn "Could not create $link; the ltb command is still available inside the app." \
-      "无法创建 $link；ltb 命令仍可在 App 内使用。"
+      "无法创建 ${link}；ltb 命令仍可在 App 内使用。"
     return 0
   fi
   say "Linked the ltb command: $link" "已链接 ltb 命令：$link"
@@ -808,7 +808,7 @@ link_cli() {
         *) profile=".zprofile" ;;
       esac
       say "Your PATH does not include ~/.local/bin. To use ltb, add this line to ~/$profile and open a new Terminal window:" \
-        "PATH 中没有 ~/.local/bin。要使用 ltb，请把下面这一行加入 ~/$profile，然后打开新的终端窗口："
+        "PATH 中没有 ~/.local/bin。要使用 ltb，请把下面这一行加入 ~/${profile}，然后打开新的终端窗口："
       # The single quotes are intentional: this prints the literal line to add.
       # shellcheck disable=SC2016
       printf '    export PATH="$HOME/.local/bin:$PATH"\n'
@@ -848,7 +848,7 @@ run_install() {
     if ! ditto -x -k --noqtn "$ZIP_FILE" "$STAGING_DIR/new"; then
       die "Could not unpack $(basename "$ZIP_FILE"); nothing was changed." "无法解压 $(basename "$ZIP_FILE")；没有做任何更改。"
     fi
-    [ -d "$new_app" ] || die "The zip does not contain $APP_BUNDLE_NAME; nothing was changed." "zip 中没有 $APP_BUNDLE_NAME；没有做任何更改。"
+    [ -d "$new_app" ] || die "The zip does not contain $APP_BUNDLE_NAME; nothing was changed." "zip 中没有 ${APP_BUNDLE_NAME}；没有做任何更改。"
   else
     ditto "$BUILT_APP" "$new_app"
   fi
@@ -860,13 +860,13 @@ run_install() {
   if [ "$EXISTING_KIND" = "current" ]; then
     quit_running_copy "$TARGET_APP"
   fi
-  step "Installing into $DEST_DIR…" "正在安装到 $DEST_DIR…"
+  step "Installing into ${DEST_DIR}…" "正在安装到 ${DEST_DIR}…"
   swap_in "$new_app"
   if [ "$EXISTING_KIND" = "current" ] && [ -n "$EXISTING_VERSION" ] && [ "$EXISTING_VERSION" != "$NEW_VERSION" ]; then
     say "Updated Local Tasks Bridge $EXISTING_VERSION → $NEW_VERSION: $TARGET_APP" \
-      "已将 Local Tasks Bridge 从 $EXISTING_VERSION 更新到 $NEW_VERSION：$TARGET_APP"
+      "已将 Local Tasks Bridge 从 $EXISTING_VERSION 更新到 ${NEW_VERSION}：$TARGET_APP"
   else
-    say "Installed Local Tasks Bridge $NEW_VERSION: $TARGET_APP" "已安装 Local Tasks Bridge $NEW_VERSION：$TARGET_APP"
+    say "Installed Local Tasks Bridge $NEW_VERSION: $TARGET_APP" "已安装 Local Tasks Bridge ${NEW_VERSION}：$TARGET_APP"
   fi
 
   if [ "$INSTALL_CLI" -eq 1 ]; then
@@ -986,7 +986,7 @@ run_uninstall() {
       printf '%s\n' "$output" >&2
     fi
     die "'ltb uninstall' failed (exit $status); the app was left in place. To remove the login item by hand run: launchctl bootout gui/$(id -u)/$LAUNCH_AGENT_LABEL; rm -f ~/Library/LaunchAgents/$LAUNCH_AGENT_LABEL.plist — then run this uninstaller again." \
-      "ltb uninstall 执行失败（退出码 $status）；App 保持不变。可手动移除登录项：launchctl bootout gui/$(id -u)/$LAUNCH_AGENT_LABEL; rm -f ~/Library/LaunchAgents/$LAUNCH_AGENT_LABEL.plist，然后重新运行卸载。"
+      "ltb uninstall 执行失败（退出码 ${status}）；App 保持不变。可手动移除登录项：launchctl bootout gui/$(id -u)/$LAUNCH_AGENT_LABEL; rm -f ~/Library/LaunchAgents/$LAUNCH_AGENT_LABEL.plist，然后重新运行卸载。"
   fi
 
   say "Removed the login item." "已移除登录项。"
@@ -1007,7 +1007,7 @@ run_uninstall() {
 
   for app in "${apps[@]}"; do
     if ! rm -rf "$app"; then
-      die "Could not remove $app; remove it in Finder." "无法删除 $app；请在访达中手动删除。"
+      die "Could not remove $app; remove it in Finder." "无法删除 ${app}；请在访达中手动删除。"
     fi
     say "Removed $app" "已删除 $app"
   done

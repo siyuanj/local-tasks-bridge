@@ -51,6 +51,8 @@ STATUS=0
 LOG=""
 TEST_HOME=""
 TEST_LANG="en"
+# Users run the installer in a UTF-8 locale; bash 3.2 behaves differently there.
+TEST_LOCALE="en_US.UTF-8"
 EXTRA_ENV=()
 
 pass() {
@@ -243,7 +245,7 @@ run_installer() {
   CASE_NO=$((CASE_NO + 1))
   LOG="${TMP_ROOT}/logs/case-${CASE_NO}.log"
   STATUS=0
-  env -i HOME="$TEST_HOME" PATH="$TEST_PATH" TMPDIR="${TMP_ROOT}/tmp" SHELL=/bin/zsh \
+  env -i HOME="$TEST_HOME" PATH="$TEST_PATH" TMPDIR="${TMP_ROOT}/tmp" SHELL=/bin/zsh LANG="$TEST_LOCALE" \
     USER="${USER:-tester}" LTB_LANG="$TEST_LANG" LTB_SYSTEM_APPLICATIONS_DIR="$SYSTEM_APPS" \
     ${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"} \
     "$TEST_BASH" "$INSTALLER" "$@" >"$LOG" 2>&1 </dev/null || STATUS=$?
@@ -296,9 +298,11 @@ run_installer --help
 check "--help exits 0 and prints usage" succeeded
 check "--help mentions --uninstall" output_has "--uninstall"
 TEST_LANG=zh
+TEST_LOCALE=zh_CN.UTF-8
 run_installer --help
 check "Chinese help with LTB_LANG=zh" output_has "用法："
 TEST_LANG=en
+TEST_LOCALE=en_US.UTF-8
 run_installer --bogus
 check "unknown option exits 2" exited_with 2
 run_installer --revoke
@@ -534,7 +538,7 @@ check "the trial build was moved to the Trash" id_is "${LEGACY_TRASHED:-/nonexis
 new_home piped
 STATUS=0
 LOG="${TMP_ROOT}/logs/piped.log"
-env -i HOME="$TEST_HOME" PATH="$TEST_PATH" TMPDIR="${TMP_ROOT}/tmp" SHELL=/bin/zsh LTB_LANG=en \
+env -i HOME="$TEST_HOME" PATH="$TEST_PATH" TMPDIR="${TMP_ROOT}/tmp" SHELL=/bin/zsh LANG="$TEST_LOCALE" LTB_LANG=en \
   LTB_SYSTEM_APPLICATIONS_DIR="$SYSTEM_APPS" "$TEST_BASH" -s -- --zip "${REL1}/LocalTasksBridge-macos-arm64.zip" --no-open --no-cli \
   <"$INSTALLER" >"$LOG" 2>&1 || STATUS=$?
 check "install works when the script is piped into bash" succeeded
@@ -542,9 +546,11 @@ check "piped install put the app in place" id_is "${TEST_HOME}/Applications/${AP
 
 new_home chinese
 TEST_LANG=zh
+TEST_LOCALE=zh_CN.UTF-8
 run_installer --zip "${REL1}/LocalTasksBridge-macos-arm64.zip" --no-open --no-cli
 check "Chinese messages with LTB_LANG=zh" output_has "已安装 Local Tasks Bridge 1.0.0"
 TEST_LANG=en
+TEST_LOCALE=en_US.UTF-8
 
 # ---------------------------------------------------------------------------
 # --from-source with a stub build (no compiler, no network)

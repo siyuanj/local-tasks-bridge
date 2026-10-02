@@ -105,7 +105,7 @@ fi
 
 if [ ! -f "$engine" ]; then
     fail "ltb: the Local Tasks Bridge engine is missing ($engine). Reinstall Local Tasks Bridge." \
-        "ltb：缺少 Local Tasks Bridge 引擎（$engine）。请重新安装 Local Tasks Bridge。"
+        "ltb：缺少 Local Tasks Bridge 引擎（${engine}）。请重新安装 Local Tasks Bridge。"
 fi
 
 if ! python="$(find_python)"; then

@@ -49,6 +49,9 @@ lint: ## bash -n and shellcheck on every shell script, actionlint, Python syntax
 	  $(LINT_BASH) -n "$$file" || status=1; \
 	done; \
 	printf 'bash -n (%s): %s scripts\n' "$(LINT_BASH)" "$${#scripts[@]}"; \
+	if LC_ALL=C grep -nE '\$$[A-Za-z_][A-Za-z0-9_]*[^[:print:][:space:]]' "$${scripts[@]}"; then \
+	  printf 'Use $${VAR} before non-ASCII text: in UTF-8 locales bash 3.2 reads the bytes as part of the name.\n' >&2; status=1; \
+	fi; \
 	if command -v shellcheck >/dev/null 2>&1; then \
 	  shellcheck "$${scripts[@]}" && printf 'shellcheck: clean\n' || status=1; \
 	elif [ "$(LINT_REQUIRE)" = "1" ]; then \

@@ -48,7 +48,9 @@ while [ $# -gt 0 ]; do
             exit 0
             ;;
         --output | --arch | --python | --oauth-client | --sign | --version)
-            [ $# -ge 2 ] && [ -n "$2" ] || die "$1 needs a value"
+            if [ $# -lt 2 ] || [ -z "$2" ]; then
+                die "$1 needs a value"
+            fi
             case "$1" in
                 --output) output="$2" ;;
                 --arch) arch="$2" ;;

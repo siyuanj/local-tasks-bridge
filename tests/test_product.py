@@ -2,6 +2,7 @@
 proxy, scheduler controls, the JSON command line, migration, and the login item."""
 from __future__ import annotations
 
+import argparse
 import base64
 import contextlib
 import datetime as dt
@@ -1364,6 +1365,25 @@ class CommandLineTests(unittest.TestCase):
             self.assertEqual(usage.returncode, 0)
             for command in ("status", "approvals", "migrate", "sync-now", "agent"):
                 self.assertIn(command, usage.stdout)
+
+
+class LoopConfigReloadTests(unittest.TestCase):
+    def test_an_unusable_config_keeps_the_previous_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            args = argparse.Namespace(config=str(path))
+            current = {"include_lists": ["Kept"]}
+            for broken in ("{not json", json.dumps({"sync_interval_seconds": 5}), "[]"):
+                path.write_text(broken, encoding="utf-8")
+                with contextlib.redirect_stdout(io.StringIO()) as out:
+                    self.assertIs(sync.reload_loop_config(args, current), current, broken)
+                self.assertIn("keeping the previous settings", out.getvalue())
+
+            path.write_text(json.dumps({"include_lists": ["New"]}), encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                reloaded = sync.reload_loop_config(args, current)
+            self.assertEqual(reloaded["include_lists"], ["New"])
+            self.assertIn("settings reloaded", out.getvalue())
 
 
 class WebsiteTests(unittest.TestCase):

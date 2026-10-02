@@ -179,6 +179,10 @@ From the second review round:
   ending in `.app`, and explains the `https_proxy` setting when a download
   fails.
 
+- Settings changed with `ltb config merge` while the sync loop runs now take
+  effect on the next cycle; before, the loop kept the lists it started with
+  until it was restarted (found in real-device acceptance).
+
 ### Removed
 
 - The Korean user interface and documentation.

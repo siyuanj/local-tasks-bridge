@@ -297,7 +297,9 @@ When the safety limits block the plan, exit code 5 and
 ### `run-loop [--log-file PATH] [--log-max-bytes N]`
 
 The background scheduler. Cycles start every `sync_interval_seconds`
-(start-to-start). With `--log-file`, all human-readable output goes to that
+(start-to-start). When `config.json` changed since the last cycle (for example
+through `config merge`), the next cycle uses the new settings; an unreadable or
+invalid file keeps the previous ones. With `--log-file`, all human-readable output goes to that
 private, size-rotated log. With `LTB_EVENT_STREAM=stdout`, one line per event is
 written to stdout, each starting with `@@LTB ` followed by a JSON object:
 

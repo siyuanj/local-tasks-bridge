@@ -607,6 +607,29 @@ class RunLoopTests(SyncScenario):
         for title in ("Loop item", "Requested now", "While paused"):
             self.assertNotIn(title, stream, "a title appeared in the event stream")
 
+    def test_config_merge_while_the_loop_runs_applies_on_the_next_cycle(self) -> None:
+        # Found in real-device acceptance: `ltb config merge` changed the
+        # selected lists, but the running loop kept syncing the old ones.
+        env = self.make_env(reminder_lists=(APPLE_LIST, "Acceptance"))
+        env.reminders.add_reminder("Old list item", due_date=day(20))
+        env.reminders.add_reminder("New list item", "Acceptance", due_date=day(21))
+        loop = env.start_loop()
+        first, _ = loop.wait_for("cycle_started", timeout=15)
+        cycle_end, _ = loop.wait_for("cycle_finished", after=first, timeout=30)
+        self.assertEqual(env.google_titles(), ["Old list item"])
+        with self.assertRaises(KeyError):  # the unselected list was not created in Google
+            env.google_titles("Acceptance")
+
+        merged = self.assert_ok(env.run("config", "merge", stdin={"include_lists": ["Acceptance"]}))
+        self.assertEqual(merged["config"]["include_lists"], ["Acceptance"], merged)
+        self.assert_ok(env.run("sync-now"))
+        second, _ = loop.wait_for("cycle_started", after=cycle_end + 1, timeout=10)
+        loop.wait_for("cycle_finished", after=second, timeout=30)
+        self.assertEqual(env.google_titles("Acceptance"), ["New list item"], loop.describe())
+        # Unselecting a list is never a deletion.
+        self.assertEqual(env.google_titles(), ["Old list item"])
+        self.assertEqual(loop.stop(signal.SIGTERM, timeout=30), 0, loop.describe())
+
     def test_a_second_run_loop_for_the_same_config_exits(self) -> None:
         env = self.make_env()
         first = env.start_loop()

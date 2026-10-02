@@ -7496,6 +7496,37 @@ def effective_scheduler_timing(config: dict[str, Any]) -> tuple[int, int]:
     return interval, trigger_gap
 
 
+def config_file_signature(args: argparse.Namespace) -> tuple[int, int] | None:
+    config_path = getattr(args, "config", None)
+    if not isinstance(config_path, (str, os.PathLike)):
+        return None
+    try:
+        stat_result = expand_path(config_path).stat()
+    except OSError:
+        return None
+    return (stat_result.st_mtime_ns, stat_result.st_size)
+
+
+def reload_loop_config(args: argparse.Namespace, current: dict[str, Any]) -> dict[str, Any]:
+    """The settings for the next cycle after config.json changed on disk.
+
+    `ltb config merge` (or an edit) while the loop runs must take effect on the
+    next cycle; otherwise a changed list selection keeps syncing the old lists.
+    An unreadable or invalid file keeps the previous settings.
+    """
+
+    try:
+        reloaded = load_config(args)
+        if int(reloaded["sync_interval_seconds"]) < MIN_SYNC_INTERVAL_SECONDS:
+            raise ValueError("sync_interval_seconds must be at least 60")
+    except (SystemExit, ValueError, TypeError, OSError) as exc:
+        print(f"[{utc_now_text()}] config.json changed but is not usable; keeping the previous settings: {exc}", flush=True)
+        return current
+    apply_network_config(reloaded)
+    print(f"[{utc_now_text()}] settings reloaded from config.json", flush=True)
+    return reloaded
+
+
 def run_scheduler(args: argparse.Namespace, loop_log: LoopLog | None) -> None:
     config = load_config(args)
     apply_network_config(config)
@@ -7528,6 +7559,7 @@ def run_scheduler(args: argparse.Namespace, loop_log: LoopLog | None) -> None:
         return False
 
     approvals = MutationPlanApprovals(config)
+    config_signature = config_file_signature(args)
     try:
         print(f"Starting sync loop every {interval} seconds. Press Ctrl-C to stop.", flush=True)
         emit_event("loop_started", version=__version__, interval=interval)
@@ -7540,6 +7572,11 @@ def run_scheduler(args: argparse.Namespace, loop_log: LoopLog | None) -> None:
                 return
             cycle_started_at = time.monotonic()
             cycle_started_wall = time.time()
+            signature = config_file_signature(args)
+            if signature != config_signature:
+                config_signature = signature
+                config = reload_loop_config(args, config)
+                configured_trigger_gap = int(config.get("trigger_min_interval_seconds") or 0)
             # Re-evaluated every cycle: signing in again can switch between
             # the person's own client and the shared one.
             interval, config["trigger_min_interval_seconds"] = effective_scheduler_timing(

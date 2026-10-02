@@ -1,0 +1,4 @@
+/* macOS 请求提醒事项访问权限时显示。 */
+"NSRemindersUsageDescription" = "Local Tasks Bridge 需要访问提醒事项，才能把你选择的列表与 Google Tasks 同步。";
+"NSRemindersFullAccessUsageDescription" = "Local Tasks Bridge 需要访问提醒事项，才能把你选择的列表与 Google Tasks 同步。";
+"NSHumanReadableCopyright" = "Copyright © 2026 Syncweave Labs contributors and Siyuan Jiang. MIT 许可证。";

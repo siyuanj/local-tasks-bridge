@@ -1,5 +1,5 @@
-name: Bug report
-description: Report a reproducible defect using redacted, synthetic data.
+name: Bug report / 问题报告
+description: Report a reproducible problem using redacted, synthetic data. / 用脱敏或虚构的数据报告可复现的问题。
 title: "[Bug]: "
 labels:
   - bug
@@ -7,45 +7,94 @@ body:
   - type: markdown
     attributes:
       value: |
-        Never include OAuth credentials, tokens, account identifiers, reminder
-        or task content, raw logs, exports, or local absolute paths.
-        Security issues must use the private vulnerability reporting flow.
+        Thank you for the report. Please never include OAuth client secrets,
+        tokens, email addresses, account identifiers, reminder or task titles
+        and notes, raw logs, exports, or local paths with your user name.
+        Security problems must be reported privately:
+        https://github.com/siyuanj/local-tasks-bridge/security/advisories/new
+
+        感谢反馈。请不要包含 OAuth 客户端密钥、令牌、邮箱地址、账户标识、提醒事项或任务的标题与备注、
+        原始日志、导出数据，或带有用户名的本地路径。安全问题请通过上面的链接私下报告。
   - type: input
     id: version
     attributes:
-      label: Commit or release
-      description: Provide the full commit SHA or release identifier.
+      label: Local Tasks Bridge version / 版本
+      description: Run `ltb version` or open "About Local Tasks Bridge" from the menu bar icon. / 运行 `ltb version`，或在菜单栏图标中打开“关于 Local Tasks Bridge”。
+      placeholder: "1.0.0"
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and Mac / macOS 版本与机型
+      description: Apple menu → About This Mac. / 苹果菜单 → 关于本机。
+      placeholder: "macOS 15.6, Apple silicon"
+    validations:
+      required: true
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: How did you install it? / 安装方式
+      options:
+        - "install.sh (release download) / 安装脚本（下载发布版）"
+        - "Release zip from GitHub / 从 GitHub 下载的 zip"
+        - "Built from source (install.sh --from-source or make install) / 从源代码构建"
+        - "Homebrew"
+    validations:
+      required: true
+  - type: dropdown
+    id: sign-in
+    attributes:
+      label: Google sign-in method / Google 登录方式
+      description: If you are not sure, run `ltb client status`. / 如不确定，可运行 `ltb client status` 查看。
+      options:
+        - "Built-in shared Local Tasks Bridge client / 内置的共享客户端"
+        - "My own Google Cloud OAuth client (credentials.json) / 我自己的 Google Cloud OAuth 客户端"
+        - "Not signed in yet / 尚未登录"
+        - "Not sure / 不确定"
     validations:
       required: true
   - type: textarea
     id: behavior
     attributes:
-      label: What happened?
-      description: Describe the observed and expected behavior.
+      label: What happened? / 发生了什么？
+      description: Describe what you saw and what you expected instead. / 描述你看到的情况，以及你期望的结果。
     validations:
       required: true
   - type: textarea
     id: reproduction
     attributes:
-      label: Reproduction
-      description: Use synthetic examples and redact all private data.
+      label: Steps to reproduce / 复现步骤
+      description: Use synthetic examples ("Test list", "Buy milk") and redact private data. / 请使用虚构的例子，并去除隐私信息。
+      placeholder: |
+        1. …
+        2. …
+        3. …
     validations:
       required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Redacted `ltb doctor` output / 脱敏后的 `ltb doctor` 输出
+      description: Run `ltb doctor` in Terminal and paste the result after removing email addresses, list names, and paths. / 在终端运行 `ltb doctor`，删除邮箱地址、列表名称和路径后粘贴结果。
+      render: text
+    validations:
+      required: false
   - type: dropdown
     id: mutation
     attributes:
-      label: Did the reproduction write to Apple Reminders or Google Tasks?
+      label: Did reproducing it change Apple Reminders or Google Tasks? / 复现时是否修改了提醒事项或 Google Tasks？
       options:
-        - "No"
-        - "Yes, using non-sensitive test data"
+        - "No / 否"
+        - "Yes, only non-sensitive test data / 是，仅限不敏感的测试数据"
     validations:
       required: true
   - type: checkboxes
     id: privacy
     attributes:
-      label: Privacy check
+      label: Privacy check / 隐私确认
       options:
-        - label: I removed credentials, tokens, account identifiers, user content, exports, logs, and local paths.
+        - label: I removed credentials, tokens, account identifiers, user content, exports, logs, and local paths. / 我已删除凭据、令牌、账户标识、个人内容、导出数据、日志和本地路径。
           required: true
-        - label: This is not a security vulnerability.
+        - label: This is not a security vulnerability. / 这不是安全漏洞。
           required: true

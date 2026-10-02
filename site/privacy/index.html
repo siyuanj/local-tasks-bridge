@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Privacy Policy — Local Tasks Bridge</title>
+  <meta name="description" content="Privacy policy of Local Tasks Bridge, a macOS app that syncs Apple Reminders with Google Tasks locally on your Mac.">
+  <link rel="icon" type="image/png" href="../assets/favicon-64.png">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="alternate" hreflang="zh-Hans" href="../zh/privacy/">
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <a class="brand" href="../"><img src="../assets/icon-256.png" alt="">Local Tasks Bridge</a>
+    <nav class="links"><a href="../">Home</a><a href="../zh/privacy/" lang="zh-Hans">中文</a></nav>
+  </header>
+
+  <main class="policy">
+    <h1>Privacy Policy</h1>
+    <p class="updated">Last updated: October 1, 2026</p>
+    <p>This policy describes Local Tasks Bridge, an open-source macOS app
+      (<a href="https://github.com/siyuanj/local-tasks-bridge">source code</a>) that synchronizes Apple
+      Reminders with Google Tasks. The app runs entirely on your Mac; there is no Local Tasks Bridge
+      server.</p>
+
+    <h2>Data the app accesses</h2>
+    <ul>
+      <li><strong>Your Google account identity</strong> — the account ID and email address of the Google
+        account you sign in with (OpenID Connect <code>openid</code> and <code>email</code> scopes).</li>
+      <li><strong>Your Google Tasks</strong> — task lists and tasks (Google Tasks scope), including titles,
+        notes, due dates, completion status and identifiers.</li>
+      <li><strong>Your Apple Reminders</strong> — the Reminders lists you select in the app, read and
+        written on your Mac through Apple's EventKit framework.</li>
+    </ul>
+
+    <h2>How the data is used</h2>
+    <p>The data is used only to synchronize the Reminders lists you selected with Google Tasks: to
+      create, update, complete and delete the corresponding items, detect conflicts, verify results,
+      keep each sync tied to the same Google and Apple accounts, and show you the sync status. It is not
+      used for advertising, profiling, analytics or training AI models, and it is not sold.</p>
+    <p>Local Tasks Bridge's use and transfer of information received from Google APIs adheres to the
+      <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User
+      Data Policy</a>, including the Limited Use requirements.</p>
+
+    <h2>Where the data is stored</h2>
+    <p>Everything the app keeps is stored on your Mac in files readable only by your macOS user account:
+      the Google sign-in token, settings, the sync map (task identifiers, titles used for matching, and
+      hashed account identities), a status file (no task titles), and logs (which can contain task and
+      list titles). The sign-in token file includes the ID token Google issues at sign-in, which contains
+      your Google account ID and email address; the sync map and status file record the account only as a
+      one-way hash.</p>
+    <p>To recognize synced items, the app adds a short footer to the notes of each synced Google task
+      (for example “Synced from Apple Reminders.”, the list name and opaque identifiers). It stays in your
+      Google account like the rest of the task.</p>
+
+    <h2>What is sent where</h2>
+    <ul>
+      <li>To <strong>Google</strong> (official OAuth and Tasks API endpoints, over HTTPS): your sign-in and
+        the task changes needed to keep the selected lists in sync.</li>
+      <li>To <strong>GitHub</strong>, only when you choose “Check for Updates…”: a request for the latest
+        release version. No personal data is included.</li>
+      <li>To the <strong>developer or any third party</strong>: nothing. The app has no analytics, crash
+        reporting or telemetry.</li>
+    </ul>
+    <p>Release builds may include a shared “Local Tasks Bridge” Google OAuth client so you can sign in
+      without creating your own. With it, Google shows Local Tasks Bridge as the app requesting access,
+      but your sign-in and task data still go only between your Mac and Google. You can instead use your
+      own Google Cloud OAuth client.</p>
+
+    <h2>Retention and deletion</h2>
+    <p>Local data stays on your Mac until you remove it. In the app, Settings → Advanced → Uninstall can
+      revoke Google access and delete all local settings, sync state and logs; the command
+      <code>ltb uninstall --revoke --delete-data</code> does the same. You can revoke the app's access at
+      any time at <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>.
+      Deleting the app's local data does not delete tasks or reminders stored by Google or Apple.</p>
+
+    <h2>Security</h2>
+    <p>Sign-in uses Google's OAuth flow with a loopback redirect on your Mac, PKCE and state validation,
+      and the app refuses a sign-in that does not grant the Google Tasks permission. Access is limited to
+      the scopes shown on Google's consent screen. No method of storage or transmission is completely
+      secure; please report security issues
+      <a href="https://github.com/siyuanj/local-tasks-bridge/security/advisories/new">privately</a>.</p>
+
+    <h2>Children</h2>
+    <p>The app is not directed at children and does not knowingly collect data from them.</p>
+
+    <h2>Changes and contact</h2>
+    <p>Changes to this policy are published on this page with a new date. Questions:
+      <a href="https://github.com/siyuanj/local-tasks-bridge/issues">GitHub Issues</a>, or the support
+      email shown on Google's consent screen.</p>
+  </main>
+
+  <footer><p><a href="../">Local Tasks Bridge</a> · <a href="../zh/privacy/" lang="zh-Hans">中文版隐私政策</a></p></footer>
+</div>
+</body>
+</html>

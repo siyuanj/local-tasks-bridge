@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>隐私政策 — Local Tasks Bridge</title>
+  <meta name="description" content="Local Tasks Bridge 的隐私政策：一款在你的 Mac 本机同步 Apple 提醒事项与 Google Tasks 的 macOS App。">
+  <link rel="icon" type="image/png" href="../../assets/favicon-64.png">
+  <link rel="stylesheet" href="../../assets/style.css">
+  <link rel="alternate" hreflang="en" href="../../privacy/">
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <a class="brand" href="../"><img src="../../assets/icon-256.png" alt="">Local Tasks Bridge</a>
+    <nav class="links"><a href="../">主页</a><a href="../../privacy/" lang="en">English</a></nav>
+  </header>
+
+  <main class="policy">
+    <h1>隐私政策</h1>
+    <p class="updated">最后更新：2026 年 10 月 1 日</p>
+    <p>本政策适用于开源 macOS App Local Tasks Bridge（<a href="https://github.com/siyuanj/local-tasks-bridge">源代码</a>），
+      它用于同步 Apple 提醒事项与 Google Tasks。App 完全在你的 Mac 上运行，没有任何 Local Tasks Bridge 服务器。
+      中英文版本如有出入，以<a href="../../privacy/">英文版</a>为准。</p>
+
+    <h2>App 访问的数据</h2>
+    <ul>
+      <li><strong>你的 Google 账号身份</strong>——你登录的 Google 账号的账号 ID 和邮箱地址（OpenID Connect 的
+        <code>openid</code> 与 <code>email</code> 权限）。</li>
+      <li><strong>你的 Google Tasks</strong>——任务列表和任务（Google Tasks 权限），包括标题、备注、截止日期、完成状态和标识符。</li>
+      <li><strong>你的 Apple 提醒事项</strong>——你在 App 中选择的提醒事项列表，通过 Apple 的 EventKit 框架在你的 Mac 上读写。</li>
+    </ul>
+
+    <h2>数据的用途</h2>
+    <p>这些数据只用于把你选择的提醒事项列表与 Google Tasks 同步：创建、更新、完成和删除对应条目，检测冲突，校验结果，
+      确保每次同步对应同一个 Google 和 Apple 账号，并向你显示同步状态。数据不会用于广告、画像、统计分析或训练 AI 模型，也不会被出售。</p>
+    <p>Local Tasks Bridge 对从 Google API 获得的信息的使用和传输遵守
+      <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API 服务用户数据政策</a>，
+      包括其中的 Limited Use（有限使用）要求。</p>
+
+    <h2>数据存储在哪里</h2>
+    <p>App 保存的所有内容都存放在你的 Mac 上，且只有你的 macOS 用户账号可以读取：Google 登录令牌、设置、同步对应关系
+      （任务标识符、用于匹配的标题以及经过哈希处理的账号身份）、状态文件（不含任务标题）以及日志（可能包含任务和列表标题）。
+      登录令牌文件中包含 Google 在登录时签发的 ID 令牌，其中有你的 Google 账号 ID 和邮箱地址；同步对应关系和状态文件只以单向哈希的形式记录账号。</p>
+    <p>为了识别已同步的条目，App 会在每个已同步 Google 任务的备注末尾加一小段标记（例如 “Synced from Apple Reminders.”、
+      列表名称和不透明的标识符）。它和任务的其他内容一样保存在你的 Google 账号中。</p>
+
+    <h2>数据会发送到哪里</h2>
+    <ul>
+      <li><strong>Google</strong>（官方 OAuth 与 Tasks API 接口，经 HTTPS）：你的登录，以及保持所选列表同步所需的任务改动。</li>
+      <li><strong>GitHub</strong>：只有在你选择“检查更新…”时，才会请求最新版本号，不包含任何个人数据。</li>
+      <li><strong>开发者或任何第三方</strong>：不发送任何数据。App 没有统计分析、崩溃上报或遥测功能。</li>
+    </ul>
+    <p>发布版可能内置一个共享的 “Local Tasks Bridge” Google OAuth 客户端，让你无需自己创建就能登录。使用它时，Google
+      会显示 Local Tasks Bridge 为申请授权的应用，但你的登录信息和任务数据仍然只在你的 Mac 与 Google 之间传输。
+      你也可以改用自己的 Google Cloud OAuth 客户端。</p>
+
+    <h2>保留与删除</h2>
+    <p>本地数据会一直保留在你的 Mac 上，直到你删除。在 App 中，“设置 → 高级 → 卸载”可以撤销 Google 授权并删除全部本地设置、
+      同步状态和日志；命令 <code>ltb uninstall --revoke --delete-data</code> 效果相同。你也可以随时在
+      <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a> 撤销授权。
+      删除 App 的本地数据不会删除 Google 或 Apple 中保存的任务和提醒事项。</p>
+
+    <h2>安全</h2>
+    <p>登录使用 Google 的 OAuth 流程（你 Mac 上的本机回环地址、PKCE 与 state 校验），没有授予 Google Tasks 权限的登录会被拒绝。
+      访问权限仅限 Google 授权页上显示的范围。任何存储或传输方式都无法保证绝对安全；安全问题请
+      <a href="https://github.com/siyuanj/local-tasks-bridge/security/advisories/new">私下报告</a>。</p>
+
+    <h2>儿童</h2>
+    <p>本 App 并非面向儿童，也不会有意收集儿童的数据。</p>
+
+    <h2>变更与联系</h2>
+    <p>本政策如有变更，会在本页更新并注明日期。问题请提交到
+      <a href="https://github.com/siyuanj/local-tasks-bridge/issues">GitHub Issues</a>，或联系 Google 授权页上显示的支持邮箱。</p>
+  </main>
+
+  <footer><p><a href="../">Local Tasks Bridge</a> · <a href="../../privacy/" lang="en">English privacy policy</a></p></footer>
+</div>
+</body>
+</html>

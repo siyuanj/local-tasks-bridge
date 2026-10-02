@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Local Tasks Bridge — 在 Mac 上同步 Apple 提醒事项与 Google Tasks</title>
+  <meta name="description" content="Local Tasks Bridge 是一款免费开源的 macOS 菜单栏 App，把你选择的 Apple 提醒事项列表与 Google Tasks 双向同步，只在你的 Mac 上运行。">
+  <link rel="icon" type="image/png" href="../assets/favicon-64.png">
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="alternate" hreflang="en" href="../">
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <a class="brand" href="./"><img src="../assets/icon-256.png" alt="">Local Tasks Bridge</a>
+    <nav class="links">
+      <a href="#features">功能</a>
+      <a href="#install">安装</a>
+      <a href="#google">Google 权限</a>
+      <a href="privacy/">隐私政策</a>
+      <a href="https://github.com/siyuanj/local-tasks-bridge">GitHub</a>
+      <a href="../" lang="en">English</a>
+    </nav>
+  </header>
+
+  <div class="hero">
+    <img src="../assets/icon-256.png" alt="Local Tasks Bridge 应用图标">
+    <div>
+      <h1>在 Mac 上同步 Apple 提醒事项与 Google Tasks</h1>
+      <p class="lead">Local Tasks Bridge 是一款免费开源的菜单栏 App，把你选择的提醒事项列表与
+        Google Tasks 双向同步。它只在你的 Mac 上运行，中间没有任何服务器。</p>
+      <div class="buttons">
+        <a class="button primary" href="#install">安装</a>
+        <a class="button" href="https://github.com/siyuanj/local-tasks-bridge">源代码</a>
+      </div>
+    </div>
+  </div>
+
+  <section id="features">
+    <h2>功能</h2>
+    <div class="grid">
+      <div class="card"><h3>双向同步你选择的列表</h3>
+        <p>新任务、标题和截止日期的修改、完成和删除，会在你选中的提醒事项列表与同名的 Google Tasks
+        列表之间双向同步。</p></div>
+      <div class="card"><h3>Google 任务出现在 Mac 上</h3>
+        <p>在 Google Tasks、Gmail、Google 日历或 Gemini 里添加的任务，会出现在提醒事项、提醒事项小组件和
+        Siri 中。</p></div>
+      <div class="card"><h3>安全设计</h3>
+        <p>大批量的删除或完成会先等你确认；首次同步绝不删除任何内容；同步绝不会悄悄换到别的 Google 或
+        Apple 账号。</p></div>
+      <div class="card"><h3>隐私</h3>
+        <p>登录信息、同步状态和日志都只留在你的 Mac 上。任务数据只在你的 Mac 和 Google 官方接口之间传输，
+        不会发给开发者。</p></div>
+      <div class="card"><h3>原生菜单栏 App</h3>
+        <p>设置向导、一眼可见的状态、立即同步、暂停，以及待确认更改的查看窗口。本地修改几秒内就会上传。</p></div>
+      <div class="card"><h3>中英双语</h3>
+        <p>App、命令行工具和文档都提供英文与简体中文。</p></div>
+    </div>
+  </section>
+
+  <section id="how">
+    <h2>工作原理</h2>
+    <p class="flow"><span class="box">Apple 提醒事项</span><span class="arrow">⇄</span>
+      <span class="box">Mac 上的 EventKit</span><span class="arrow">⇄</span>
+      <span class="box">Local Tasks Bridge</span><span class="arrow">⇄</span>
+      <span class="box">Google Tasks API</span></p>
+    <p>Google 无法直接读取 iCloud 提醒事项，所以这个桥接程序运行在你的 macOS 用户会话里：通过 Apple 的
+      EventKit 框架读写提醒事项，并用你自己的登录访问 Google Tasks API。每次同步都会先生成计划；如果计划中的
+      删除或完成超过安全上限，会先暂缓，直到你确认的正是这一批改动。</p>
+  </section>
+
+  <section id="install">
+    <h2>安装</h2>
+    <p>需要 macOS 13 Ventura 或更新版本（Apple 芯片或 Intel）、开启 iCloud 的提醒事项，以及一个 Google 账号。</p>
+    <h3>一行命令安装</h3>
+<pre><code>curl -fsSL https://raw.githubusercontent.com/siyuanj/local-tasks-bridge/main/install.sh | bash</code></pre>
+    <div class="note">在中国大陆，<code>curl</code> 不会使用 macOS 的系统代理。请先运行
+      <code>export https_proxy=http://127.0.0.1:7890</code>（端口以你的代理软件为准），并在 App 的登录步骤里设置同一个代理。</div>
+    <h3>其他方式</h3>
+    <ul>
+      <li>从 <a href="https://github.com/siyuanj/local-tasks-bridge/releases">GitHub Releases</a> 下载适合你
+        Mac 的 zip。目前的版本尚未经过 Apple 公证，首次打开时需要在“系统设置 → 隐私与安全性”中确认。</li>
+      <li>用 Xcode 命令行工具从源码构建：
+        <code>git clone https://github.com/siyuanj/local-tasks-bridge.git &amp;&amp; cd local-tasks-bridge &amp;&amp; make install</code>。</li>
+    </ul>
+    <p>首次打开时会进入设置向导：允许访问提醒事项，选择 Google 登录方式，选好列表，查看首次同步将做的改动，然后开始同步。</p>
+  </section>
+
+  <section id="google">
+    <h2>Google 权限</h2>
+    <p>Local Tasks Bridge 只申请以下 Google 权限：</p>
+    <ul>
+      <li><code>https://www.googleapis.com/auth/tasks</code> —— 查看和管理你的 Google Tasks，用于同步你选择的列表；</li>
+      <li><code>openid</code> 和 <code>email</code> —— 识别这次同步属于哪个 Google 账号，并显示给你看。</li>
+    </ul>
+    <p>它不会申请 Gmail、Google 日历、Google 云端硬盘或 Google Cloud 数据的访问权限。Tasks 权限覆盖整个账号，
+      但 App 只读写你选择的列表。</p>
+    <table>
+      <tr><th>登录方式</th><th>需要准备</th><th>说明</th></tr>
+      <tr><td>快速登录</td><td>无需准备，发布版已内置</td>
+        <td>在 App 完成 Google 验证之前，Google 可能会显示“Google 尚未验证此应用”。你的数据仍然不会经过开发者。</td></tr>
+      <tr><td>使用自己的 Google Cloud 客户端</td><td>在免费的 Google Cloud 项目中操作约 10 分钟
+        （<a href="https://github.com/siyuanj/local-tasks-bridge/blob/main/docs/google-cloud-setup.zh-CN.md">教程</a>）</td>
+        <td>没有用户数限制，使用你自己的 API 配额。</td></tr>
+    </table>
+    <p>Local Tasks Bridge 对从 Google API 获得的信息的使用和传输遵守
+      <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API 服务用户数据政策</a>，
+      包括其中的 Limited Use（有限使用）要求。详情请见<a href="privacy/">隐私政策</a>。你可以随时在
+      <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a> 撤销授权。</p>
+  </section>
+
+  <section id="support">
+    <h2>支持</h2>
+    <p>问题和错误反馈：<a href="https://github.com/siyuanj/local-tasks-bridge/issues">GitHub Issues</a>。
+      请勿公开贴出任务内容、令牌或日志。安全问题请<a href="https://github.com/siyuanj/local-tasks-bridge/security/advisories/new">私下报告</a>。</p>
+  </section>
+
+  <footer>
+    <p>Local Tasks Bridge 是基于 MIT 许可证的开源软件，由 Siyuan Jiang 维护，派生自
+      <a href="https://github.com/syncweave-labs/reminders-task-bridge">syncweave-labs/reminders-task-bridge</a>。</p>
+    <p>Apple 和提醒事项是 Apple Inc. 的商标；Google 和 Google Tasks 是 Google LLC 的商标。本项目与 Apple、Google
+      均无隶属或背书关系。</p>
+    <p><a href="privacy/">隐私政策</a> · <a href="../" lang="en">English</a></p>
+  </footer>
+</div>
+</body>
+</html>

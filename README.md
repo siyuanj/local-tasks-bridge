@@ -1,506 +1,457 @@
 # Local Tasks Bridge
 
-A local-first macOS bridge between Apple Reminders and Google Tasks. This
-repository is Siyuan Jiang's maintained product fork of
-`syncweave-labs/reminders-task-bridge`, with the original MIT license and
-copyright notice preserved.
+**English** · [简体中文](README.zh-CN.md) · [Website](https://siyuanj.github.io/local-tasks-bridge/)
 
-## Local trial (2026-09-30)
+Two-way sync between Apple Reminders and Google Tasks that runs entirely on
+your Mac.
 
-This repository began as a private local fork based on upstream commit
-`3501800b672ef58c823eb0711c22412c2db98dce`; it is not an upstream release.
-Do not run the default installer for this trial. The reviewed private background
-installation is documented in [docs/09-30 background-local.md](docs/09-30%20background-local.md).
-The local patch requests only the selected Google service plus identity scopes,
-supports `manual_oauth_browser: true`, and passes `include_lists` to both Swift
-helpers so reads and writes share the same list boundary. Store trial config
-and credentials outside this repository. Run `test_local_safety.py` with the
-upstream tests before live trials. OAuth and macOS permissions remain necessary;
-the list restriction is application logic, not a narrower OS permission grant.
-The local trial also refreshes completed reminders after applying inbound Google
-changes. Without that refresh, a newly completed reminder could be mistaken for
-a deletion in the same synchronization pass. See the isolated live acceptance
-record in [docs/09-30 local-acceptance.md](docs/09-30%20local-acceptance.md).
-Confirmed completed reminders can propagate when the active list becomes empty;
-the empty-source guard still blocks missing-item and duplicate deletions.
-The explicit `--no-delete-stale` override still suppresses completion propagation.
-The personal OAuth app is now External / In production and uses the published
-Local Tasks Bridge homepage and privacy policy on the owner's GitHub Pages site.
-The production refresh token was independently refreshed and checked against the
-Tasks API. On this Mac the LaunchAgent uses the existing local system proxy. The
-Tasks client retries transient GET failures. A task-completion PATCH is retried
-only after a follow-up GET confirms that Google still reports the task as
-active; other writes are not retried after an unknown transport outcome.
+Local Tasks Bridge is a small menu bar app. It copies new items, edits,
+completions and deletions between the Reminders lists you choose and the Google
+Tasks lists with the same names. There is no server in between: your Mac talks
+to Reminders through macOS and to Google directly over HTTPS, and every
+credential and sync record stays in your home folder.
 
-Apple Reminders와 Google Tasks를 로컬 Mac에서 양방향 동기화하는 도구다.
-Google은 iCloud Reminders를 직접 읽고 쓸 수 없으므로, 로그인된 Mac의
-EventKit과 사용자 LaunchAgent가 연결 지점이 된다.
+> [!NOTE]
+> **Version 1.0.** Builds are ad-hoc signed and not yet notarized by Apple, so
+> macOS asks you to confirm the first launch of a copy downloaded with a
+> browser ([steps below](#option-b-download-from-releases)). The one-line
+> installer and the Releases page work once the GitHub repository and its first
+> release are published — until then, [build from source](#option-c-build-from-source).
 
-This is a local-first, bidirectional bridge between Apple Reminders and Google
-Tasks. It runs in the signed-in macOS user session, keeps credentials and sync
-state outside the repository, and blocks unexpectedly destructive changes
-before writing them.
+## Features
 
-## Project status
+- **Two-way sync of the lists you choose.** Each selected Reminders list is
+  paired with the Google Tasks list of exactly the same name, which is created
+  in Google if it doesn't exist. Titles, notes, due dates and completion sync in
+  both directions.
+- **Completions and deletions, with brakes.** Completing or deleting an item on
+  one side does the same on the other. A cycle that would complete or delete
+  more than 25 items, or more than 25 % of the items the bridge manages, is held
+  until you approve it — and everything else keeps syncing in the meantime.
+- **Local-first, no server.** No account with us, no telemetry, no cloud relay.
+  Only your Mac, Apple and Google are involved. See [PRIVACY.md](PRIVACY.md).
+- **Native menu bar app** with a setup assistant, status at a glance,
+  **Sync Now**, **Pause Sync**, and a review window for held changes.
+- **English and Simplified Chinese** in the app and on the command line.
+- **Works with everything that uses Reminders:** the macOS Reminders widget,
+  Siri, and your iPhone, iPad and Apple Watch through iCloud.
+- **Brings Google's tasks to your Mac:** tasks you add in Google Tasks, Gemini,
+  Gmail or Google Calendar appear in Reminders.
+- **A command line too.** The `ltb` tool runs the same engine: status, dry
+  runs, diagnostics, approvals and migration.
 
-The project is maintained for real-world use on macOS and welcomes focused bug
-reports and pull requests. It is intentionally conservative: correctness,
-account binding, deletion safety, and recoverability take priority over adding
-new integrations.
+## How it works
 
-- License: [MIT](LICENSE)
-- Contribution guide: [CONTRIBUTING.md](CONTRIBUTING.md)
-- Code of conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
-- Security policy: [SECURITY.md](SECURITY.md)
-- Supported source branch: `main`
+```mermaid
+flowchart LR
+  subgraph mac["Your Mac — everything runs here"]
+    rem["Apple Reminders<br/>(your lists)"]
+    helpers["EventKit helpers<br/>ltb-reminders-export<br/>ltb-reminders-apply"]
+    engine["Sync engine<br/>(Python, standard library)"]
+    app["Local Tasks Bridge.app<br/>menu bar · setup · approvals"]
+    files[("~/.config/local-tasks-bridge<br/>settings · sign-in · sync map")]
+    rem <--> helpers
+    helpers <--> engine
+    app -->|runs and supervises| engine
+    engine --- files
+  end
+  google["Google Tasks API<br/>(your Google account)"]
+  engine <-->|HTTPS| google
+  icloud["iPhone · iPad · Watch<br/>via iCloud"] <--> rem
+  google <--> gapps["Google Tasks · Gmail ·<br/>Calendar · Gemini"]
+```
 
-## Quick start
+Each sync cycle reads the selected Reminders lists and the matching Google
+lists, works out a complete plan of changes in both directions, checks the plan
+against the safety limits, applies it, re-reads Google to verify titles and due
+dates, and saves its sync map. Cycles run every minute (every five minutes with
+the shared sign-in, see [below](#choosing-a-sign-in-method)) and right after you
+change something in Reminders. The details are in
+[docs/architecture.md](docs/architecture.md).
 
-Requirements:
+Syncing happens only while the Mac is on, awake and you are logged in. Changes
+made on your phone or in Google while the Mac sleeps are picked up when it
+wakes.
 
-- a Mac signed in to iCloud with Reminders enabled
-- Python 3 and the Swift toolchain from Xcode Command Line Tools
-- a Google Cloud project with the Google Tasks API enabled
-- an OAuth Desktop client JSON created for your own Google Cloud project
+## Requirements
 
-Clone the reviewed source:
+- macOS 13 Ventura or later, on Apple silicon or Intel.
+- Apple Reminders with the lists you want to sync. Use iCloud lists if you also
+  want the changes on your iPhone, iPad and Apple Watch.
+- A Google account.
+- For the “own client” sign-in method: a free Google Cloud project (no billing
+  account needed). It takes about ten minutes — see
+  [docs/google-cloud-setup.md](docs/google-cloud-setup.md).
+- For building from source: the Xcode Command Line Tools, which provide Swift
+  and Python 3.9 or newer. The full Xcode app is not needed.
+
+The sync engine runs on Python 3.9 or newer. Release builds include their own
+Python, so you don't need to install anything. An app built from source uses
+the Python of the Command Line Tools (or Homebrew's); if none is found, the app
+explains how to install Apple's free Command Line Tools.
+
+## Install
+
+### Option A: one-line installer (recommended)
 
 ```bash
-git clone https://github.com/siyuanj/local-tasks-bridge.git \
-  ~/apps/local-tasks-bridge
-cd ~/apps/local-tasks-bridge
+curl -fsSL https://raw.githubusercontent.com/siyuanj/local-tasks-bridge/main/install.sh | bash
 ```
 
-Run the source-only checks before installation:
+In mainland China, curl doesn't use the macOS system proxy. Point it at your
+proxy app first (use the HTTP port it shows), for example:
 
 ```bash
-python3 -B -m unittest test_icloud_reminders_google_sync.py
-python3 -B -m py_compile \
-  icloud_reminders_google_sync.py \
-  test_icloud_reminders_google_sync.py
-bash -n setup-new-mac.sh make-migration-bundle.sh scripts/*.sh
-bash scripts/test-release-source-gate.sh
+export https_proxy=http://127.0.0.1:7890
+curl -fsSL https://raw.githubusercontent.com/siyuanj/local-tasks-bridge/main/install.sh | bash
 ```
 
-Installation changes local credentials, runtime files, Apple Reminders access,
-Google authentication, and a user LaunchAgent. Read the verified installation
-section below before running `setup-new-mac.sh`. Pass your own Google Cloud
-project explicitly:
+The installer downloads the latest release for your Mac's processor, checks it
+against the published `SHA256SUMS`, installs **Local Tasks Bridge.app** into
+`~/Applications` (or updates an existing copy where it is), links the `ltb` command into `~/.local/bin` and opens the app.
+It never uses `sudo`. Because the app is not downloaded by a browser and the
+installer clears the quarantine flag, you won't see the Gatekeeper prompt. You
+are welcome to read [install.sh](install.sh) first.
+
+Options go after `bash -s --`, for example
+`curl -fsSL …/install.sh | bash -s -- --version v1.0.0`:
+
+| Option | Effect |
+| --- | --- |
+| `--version vX.Y.Z` | Install that release instead of the latest |
+| `--dest DIR` | Install into the folder `DIR` (default: where an existing copy is, otherwise `~/Applications`; a path ending in `.app` is refused) |
+| `--zip PATH` | Install a release zip you downloaded; a `SHA256SUMS` next to it is verified |
+| `--from-source [DIR]` | Build from source instead (needs the Xcode Command Line Tools) |
+| `--no-cli` / `--no-open` | Don't link `ltb` / don't open the app afterwards |
+| `--uninstall` | Remove the app, login item and `ltb` link (add `--revoke`, `--delete-data`, `--yes` as needed) |
+
+Run it with `--help` for everything else.
+
+### Option B: download from Releases
+
+1. Open the [latest release](https://github.com/siyuanj/local-tasks-bridge/releases/latest)
+   and download `SHA256SUMS` and the zip for your Mac:
+   `LocalTasksBridge-macos-arm64.zip` for Apple silicon (M1 and later) or
+   `LocalTasksBridge-macos-x86_64.zip` for Intel. Not sure? Apple menu →
+   **About This Mac**: “Chip: Apple M…” means Apple silicon.
+2. Optional but recommended — compare the checksum with the published one:
+
+   ```bash
+   cd ~/Downloads
+   shasum -a 256 LocalTasksBridge-macos-*.zip
+   cat SHA256SUMS
+   ```
+
+3. Double-click the zip and move **Local Tasks Bridge.app** into the
+   Applications folder (`/Applications`, or `Applications` in your home folder).
+   If Safari's *Open “safe” files after downloading* is on, Safari has already
+   unzipped the download and removed the zip: move the extracted app from
+   Downloads instead (the checksum step then works only if you kept the zip).
+   The app must run from Applications — started from Downloads or a disk image
+   it refuses to finish setup or start at login.
+4. Open the app. Because 1.0 is not notarized, macOS blocks the first launch
+   once:
+   - **macOS 15 Sequoia and later:** macOS reports that “Local Tasks Bridge”
+     was not opened. Click **Done**, open **System Settings → Privacy &
+     Security**, scroll down to **Security**, click **Open Anyway** next to the
+     message about Local Tasks Bridge, and confirm with your password or Touch
+     ID.
+   - **macOS 13 Ventura and 14 Sonoma:** Control-click the app, choose
+     **Open**, then click **Open** again (or use **Open Anyway** as above).
+
+   This is needed once for each downloaded version. Alternatively, let the
+   installer handle the zip, which skips this step:
+   `curl -fsSL https://raw.githubusercontent.com/siyuanj/local-tasks-bridge/main/install.sh | bash -s -- --zip ~/Downloads/LocalTasksBridge-macos-arm64.zip`
+
+### Option C: build from source
 
 ```bash
-GCP_PROJECT='<your-google-cloud-project-id>' \
-DEPLOY_EXPECTED_COMMIT="$(git rev-parse HEAD)" \
-bash setup-new-mac.sh
+xcode-select --install   # once, if the Command Line Tools are not installed
+git clone https://github.com/siyuanj/local-tasks-bridge.git
+cd local-tasks-bridge
+make install
 ```
 
-## Privacy and security
+`make install` builds this checkout — the Reminders helpers and the app — and
+installs **Local Tasks Bridge.app** into `~/Applications` with the installer,
+links `ltb` and opens the app. To bundle a private Python into the app, use
+`make install INSTALL_ARGS="--embed-python"`. A build from source does not
+contain the shared Google sign-in, so pick **your own Google Cloud client** in
+the setup assistant ([guide](docs/google-cloud-setup.md)). Apps you build
+yourself are not quarantined, so there is no Gatekeeper prompt. More build
+targets are listed in [CONTRIBUTING.md](CONTRIBUTING.md).
 
-OAuth credentials, refresh tokens, task/reminder content, synchronization
-state, status files, logs, and exports are local runtime data and must never be
-committed or pasted into public issues. The default `doctor` command is
-local-only and redacts stored errors and absolute paths. Use
-`doctor --online` only when you intentionally allow a Google token refresh and
-an API connectivity check.
+## First run: the setup assistant
 
-Security reports should follow [SECURITY.md](SECURITY.md), not a public issue.
+The first time you open the app, a setup assistant walks you through these
+steps:
 
-## 운영 계약
+1. **Reminders access.** macOS asks whether Local Tasks Bridge may access your
+   reminders — click **Allow**. macOS grants access to all lists, but the bridge
+   reads and writes only the lists you select in step 4.
+2. **Sign-in method.** Choose **Quick sign-in**, the shared client built into
+   release builds (nothing to set up), or **Use my own Google Cloud OAuth
+   client** and import the JSON file you downloaded from Google with **Choose
+   Client JSON…**. See the [comparison](#choosing-a-sign-in-method). In
+   mainland China, first open **Network settings (proxy)** on this step and
+   enter your proxy, then sign in (see
+   [Network and proxy](docs/troubleshooting.md#network-and-proxy)).
+3. **Google sign-in.** Your browser opens Google's sign-in page; choose your
+   account. While a client is unverified, Google shows **“Google hasn't
+   verified this app”**: click **Advanced**, then **Go to … (unsafe)**. Leave
+   the permission **“Create, edit, organize, and delete all your tasks”**
+   ticked — a sign-in without it is rejected.
+4. **Choose lists.** Tick the Reminders lists to sync. Each pairs with the
+   Google Tasks list of exactly the same name, which is created in Google if it
+   is missing. To bring an existing Google list to the Mac — for example
+   **My Tasks**, where Gmail, Google Calendar and Gemini put new tasks — click
+   **Create in Reminders** next to it under *Google Tasks lists without a
+   matching Reminders list*; the new list gets exactly the same name.
+5. **Choose how to sync.** The defaults suit most people: two-way sync,
+   completions and deletions within the safety limits, reminders without a due
+   date included, existing Google tasks imported, and the sync interval.
+6. **Run the first sync.** The assistant first runs a dry run and shows what
+   would happen, for example how many tasks will be added to Reminders and how
+   many reminders to Google Tasks. When you click **Start Syncing**, it runs the
+   first real sync with deletions and completions switched off — the first sync
+   never deletes or completes anything — and then syncs in the background and
+   at every login. The last page also offers **Install Command-Line Tool** for
+   `ltb`.
 
-- Apple Reminders 목록과 같은 이름의 Google Tasks 목록을 사용한다.
-- 빈 목록과 날짜 없는 항목을 포함해 양방향으로 동기화한다.
-- Apple 완료는 Google 완료로, Apple 삭제는 Google 삭제로 반영한다.
-- 양쪽이 바뀌면 더 최근 수정 내용을 기준으로 맞춘다.
-- 동기화 후 Google Tasks를 다시 읽어 제목과 마감일을 검증한다.
-- Google 목록 조회가 늦을 때는 최근 task 단건 조회와 짧은 재시도를
-  사용한다.
-- 동시 실행은 잠금 파일로 막고, 마지막 결과는 `status.json`에 쓴다.
-- 한도를 넘는 삭제·완료는 로그인한 사용자에게 한 번 묻고 승인한 묶음만
-  적용한다. 답을 기다리는 동안에도 나머지 변경은 계속 동기화한다.
-- 사용자 세션의 LaunchAgent가 1분 간격으로 실행한다. Mac이 잠자거나
-  사용자가 로그아웃한 동안 실행되는 서버 데몬은 아니다.
-- 새 Mac의 첫 동기화는 반드시 `--no-delete-stale`로 상태 맵을 재구축한다.
+If you used an earlier version of this bridge (the 2026-09 private trial or the
+upstream `icloud-reminders-google-sync`), the assistant offers **Import My
+Existing Setup** instead. It keeps your Google sign-in and sync map; see
+[docs/migration.md](docs/migration.md).
 
-## 목록별 동기화 정책
+## Choosing a sign-in method
 
-`target_service: "tasks"`에서는 Apple Reminders 목록 제목을 키로 사용해
-목록마다 방향, 삭제·완료 전파, 날짜 없는 항목, 충돌 처리를 다르게 설정할
-수 있다. 지정하지 않은 필드는 기존 전역 설정을 그대로 상속하므로 기존
-config는 변경 없이 같은 방식으로 동작한다.
+Local Tasks Bridge signs in to Google with an OAuth “client” — the identity of
+the app that Google shows on its consent screen. Your tasks travel directly
+between your Mac and Google with either method.
 
-```json
-{
-  "bidirectional": true,
-  "delete_stale": true,
-  "tasks_sync_undated": true,
-  "conflict_policy": "newer_wins",
-  "list_policies": {
-    "업무": {
-      "direction": "bidirectional",
-      "delete_propagation": true,
-      "sync_undated": true,
-      "conflict_policy": "newer_wins"
-    },
-    "보관": {
-      "direction": "apple_to_google",
-      "delete_propagation": false,
-      "sync_undated": false,
-      "conflict_policy": "skip"
-    },
-    "Google 수신함": {
-      "direction": "google_to_apple",
-      "delete_propagation": false,
-      "sync_undated": true,
-      "conflict_policy": "skip"
-    }
-  }
-}
-```
-
-- `direction`: `apple_to_google`, `google_to_apple`, `bidirectional` 중 하나다.
-  전역 기본값은 `bidirectional: true`이면 `bidirectional`, 아니면
-  `apple_to_google`이다.
-- `delete_propagation`: Apple 삭제·완료를 Google에 반영하고 Google
-  삭제·완료를 Apple에 반영할지 결정한다. 중복 Google 항목 정리도 이
-  정책을 따른다. 전역 기본값은 `delete_stale`이다.
-- `sync_undated`: 날짜 없는 활성 Apple 항목을 내보내고, 날짜 없는 신규
-  Google 항목을 가져올지 결정한다. 전역 기본값은
-  `tasks_sync_undated`이다.
-- `conflict_policy`: 양쪽 내용이 모두 바뀐 경우 `skip` 또는
-  `newer_wins`를 사용한다. 전역 기본값은 `conflict_policy`다. 이 선택은
-  `bidirectional` 목록에서만 필요하며, 단방향 목록은 지정된 출발 쪽을
-  source of truth로 사용한다.
-
-목록 제목은 Reminders에 표시되는 이름과 정확히 같아야 한다. 알 수 없는
-필드, 잘못된 enum, 문자열로 쓴 boolean 등은 인증이나 동기화 쓰기 전에
-config 오류로 중단한다. `--no-delete-stale`은 목록별
-`delete_propagation: true`보다 우선하는 전체 안전 차단이다.
-
-Google의 삭제 기록은 현재 동기화 상태에 연결된 동일한 task ID에만
-적용한다. 삭제가 반영되어 연결이 정리된 뒤 Apple에서 같은 미리 알림을
-복원하면, 과거 삭제 기록으로 다시 지우지 않는다. 양방향 목록에서는
-복원한 항목을 Google에 다시 생성한다. 상태 맵이 없는 경우에도 과거
-삭제 기록만으로 Apple 항목을 지우지 않는다.
-
-빈 Apple 목록 미러링은 계속 유지된다. 다만 `google_to_apple` 전용 목록과
-같은 이름의 Google Tasks 목록이 없으면, 방향 정책을 어기며 새 Google
-목록을 만들지 않고 해당 주기를 건너뛴다. Google에만 있는 일반 task를
-처음 가져오려면 기존과 같이 `tasks_import_unsynced: true`가 필요하다.
-최초 연결 시 양쪽 항목을 추적하기 위한 동기화 metadata가 Google task의
-notes에 추가될 수 있지만 제목·날짜·완료 상태의 흐름은 `direction`을
-따른다. 목록별 정책은 Google Tasks 모드에 적용되며 Google Calendar
-모드는 기존 전역 정책을 사용한다.
-
-## 프로젝트와 운영 경로
-
-소스와 실행 중인 릴리스를 분리한다.
-
-```text
-~/apps/icloud-reminders-google-sync/                  # Git 소스 저장소
-~/.local/share/icloud-reminders-google-sync/
-  releases/<full-commit-sha>/                         # 불변 실행 릴리스
-  current -> releases/<full-commit-sha>               # LaunchAgent의 고정 경로
-~/.config/icloud-reminders-google-sync/               # config, credentials, state, status
-~/Library/LaunchAgents/com.icloud-reminders-google-sync.plist
-~/Library/Logs/icloud-reminders-google-sync/
-  sync.out.log                                        # LaunchAgent 표준 출력
-  sync.err.log                                        # LaunchAgent 표준 오류
-```
-
-로그에는 미리 알림과 목록 제목이 남으므로 누구나 읽고 쓸 수 있는 `/tmp`에
-두지 않습니다. 설치기는 로그 디렉터리를 사용자 전용 `0700`으로 만들고 두
-로그를 `0600`으로 맞춥니다. 로그 경로가 심볼릭 링크이면 설치를 중단하고, 예전
-설치가 `/tmp`에 남긴 로그는 삭제합니다. 기본 5 MiB 이상이면 기존 내용을 `.1`로
-한 번 회전한 뒤 LaunchAgent를 다시 시작합니다.
-`ICLOUD_SYNC_LOG_MAX_BYTES`로 재설치 시 회전 기준을 조정할 수 있습니다.
-launchd가 지워진 로그를 자기 기본 권한으로 다시 만들기 때문에, `run-loop`는
-시작할 때 자기 로그 파일 권한을 다시 `0600`으로 되돌립니다.
-
-LaunchAgent는 소스 체크아웃이나 Codex worktree를 직접 실행하지 않는다.
-항상 `~/.local/share/icloud-reminders-google-sync/current`를 실행하므로 작업
-브랜치나 임시 폴더를 정리해도 운영 경로가 사라지지 않는다.
-
-## 소스 변경과 CI
-
-기능 변경은 `codex/<task>` 브랜치에서 하고 pull request로 `main`에
-병합한다. GitHub Actions와 로컬 기본 검사는 같다.
-
-```bash
-python3 -B -m unittest test_icloud_reminders_google_sync.py
-python3 -B -m py_compile icloud_reminders_google_sync.py test_icloud_reminders_google_sync.py
-bash -n setup-new-mac.sh make-migration-bundle.sh scripts/*.sh
-bash scripts/test-release-source-gate.sh
-```
-
-실제 Apple/Google 데이터를 읽거나 쓰지 않아도 위 검사를 실행할 수 있다.
-
-## 검증된 릴리스 설치
-
-`setup-new-mac.sh`는 runtime/config/LaunchAgent를 바꾸기 전에
-`scripts/check-release-source.sh`를 실행한다. 기본 설치는 다음 조건을
-모두 만족해야 한다.
-
-- 현재 브랜치가 `main`
-- tracked/untracked 변경이 없는 깨끗한 worktree
-- `origin`이 `siyuanj/local-tasks-bridge`
-- `HEAD == origin/main == GitHub의 live main`
-- `HEAD == DEPLOY_EXPECTED_COMMIT`
-
-검토·병합된 main을 설치하는 명령:
-
-```bash
-cd ~/apps/local-tasks-bridge
-git switch main
-git pull --ff-only
-DEPLOY_EXPECTED_COMMIT="$(git rev-parse HEAD)" bash setup-new-mac.sh
-```
-
-설치 스크립트는 다음 순서로 동작한다.
-
-1. 릴리스 소스 게이트를 통과한다.
-2. 검증한 commit의 실행 파일을 불변 `releases/<commit>/`에 복사한다.
-3. `current` 심볼릭 링크를 해당 릴리스로 전환한다.
-4. config와 OAuth client 위치를 준비하고 Google 인증을 확인한다.
-5. Apple Reminders 접근을 확인한다.
-6. `--no-delete-stale` dry-run과 첫 동기화를 실행한다.
-7. stable `current` 경로를 사용하는 LaunchAgent를 쓰고 로드한다.
-
-`DEPLOY_GIT_ALLOW_DIRTY`, `DEPLOY_GIT_ALLOW_NON_MAIN`,
-`DEPLOY_GIT_ALLOW_UNPUSHED`는 비상 복구용이다. 하나라도 사용하면
-`DEPLOY_GIT_OVERRIDE_REASON`이 필수이며, 경고에 사유가 기록된다. 기대
-GitHub origin은 우회할 수 없다. 정상 설치에서는 이 override를 쓰지 않는다.
-
-## 새 Mac용 검증 번들
-
-기존 Mac의 clean main에서 번들을 만든다.
-
-```bash
-cd ~/apps/local-tasks-bridge
-git switch main
-git pull --ff-only
-DEPLOY_EXPECTED_COMMIT="$(git rev-parse HEAD)" bash make-migration-bundle.sh
-```
-
-기본 출력은 다음과 같다.
-
-```text
-~/Desktop/icloud-reminders-google-sync-migration-YYYYMMDD-HHMMSS.tar.gz
-```
-
-번들은 실행 코드, `release-source.txt`, `release-source.sha256`, 설치 안내를
-포함한다. 기본값은 OAuth desktop client `credentials.json`도 포함할 수
-있으므로 개인 보안 파일로 취급한다. ADC 로그인, refresh token,
-`state.json`, 로그, 내보낸 데이터는 포함하지 않는다.
-
-새 Mac에서는 다음 순서로 진행한다.
-
-1. 같은 iCloud 계정으로 로그인하고 Reminders 동기화를 켠다.
-2. 번들을 개인 전송 수단으로 옮겨 `~/apps/icloud-reminders-google-sync`에
-   푼다.
-3. `NEW_MAC_SETUP.txt`에 생성된 commit과 명령을 그대로 실행한다.
-4. Google 로그인과 macOS Reminders 권한 승인을 완료한다.
-
-번들 설치는 Git metadata가 없으므로 명시적인
-`DEPLOY_GIT_ALLOW_BOOTSTRAP=1`과 audit reason을 요구한다. 이 모드는
-manifest의 저장소/branch/commit 및 SHA-256 파일 검증을 통과해야만
-runtime을 변경한다. 임의 압축 폴더를 설치하는 일반 우회 수단이 아니다.
-
-## 상태 확인
-
-소스 테스트와 실제 사용자 세션 상태는 별개다. 운영 확인에는 아래
-read-only 요약을 사용한다.
-
-```bash
-/opt/homebrew/bin/python3 \
-  ~/.local/share/icloud-reminders-google-sync/current/icloud_reminders_google_sync.py \
-  doctor
-```
-
-설치가 끝난 뒤에는 Finder의 사용자 `응용 프로그램` 폴더에 생성되는
-`Google Tasks 동기화 관리.command`를 여는 것이 기본 관리 경로다. Script
-Editor에서 진단 문구만 확인하거나 긴 Terminal 명령을 복사할 필요 없이 한
-메뉴에서 다음 작업을 선택할 수 있다.
-
-1. 현재 상태 보기: 로컬 파일과 LaunchAgent, 마지막 성공 시각, 연속 실패
-   횟수만 읽는다. Google 요청이나 token 갱신은 하지 않는다.
-2. Google 연결 실제 확인: token을 갱신할 수 있으며 Tasks API와 목록 조회가
-   실제로 되는지 확인한다. OpenID UserInfo 권한이 있으면 현재 Google 계정의
-   이메일을 이 로컬 화면에만 표시하며 state/status에는 저장하지 않는다.
-3. Google 연결 복구 및 안전 재연결: private config/state/token을 먼저
-   `~/.config/icloud-reminders-google-sync/backups/`에 `0600`으로 백업하고
-   LaunchAgent를 잠시 멈춘다. 인증이 실제로 만료된 경우에만 브라우저
-   로그인을 시작한다.
-4. 백그라운드 다시 시작: 인증 만료나 계정 binding 차이가 없을 때만
-   LaunchAgent를 다시 올린다.
-5. 대량 변경 검토 후 적용: LaunchAgent를 잠시 멈추고 아무것도 쓰지 않은 채
-   다음 동기화 계획을 계산해, 한도를 넘는 삭제·완료 항목을 목록별 제목으로
-   모두 보여 준다. `y`를 입력하면 private 파일을 백업한 뒤 방금 확인한
-   삭제·완료 묶음만 적용하고, 그 외 답은 보류로 기록한다. 끝나면
-   LaunchAgent를 원래대로 다시 올린다.
-
-관리 메뉴는 상태를 다음처럼 구분한다.
-
-| 판정 | 의미 | 관리 메뉴의 조치 |
+| | Quick sign-in (shared client) | Your own Google Cloud OAuth client |
 | --- | --- | --- |
-| `healthy` | 최근 동기화가 성공했고 LaunchAgent가 실행 중 | 조치 없음 |
-| `auth_required` | Google token이 없거나 만료·취소됨 | 브라우저 로그인 후 Tasks API 재검증 |
-| `account_binding_required` | Google 인증은 가능하지만 Apple/Google 계정 기준이 저장 상태와 다름 | 계정 확인 후 기존 상태를 백업으로 이동하고 안전 재구축 |
-| `mutation_approval_pending` | 완료·삭제 계획이 안전 한도를 넘어 답을 기다림. 나머지 변경은 계속 동기화 | 화면의 확인 창에 답하거나 5번에서 검토 후 적용·보류 |
-| `mutation_blocked` | 수동 `sync`가 한도를 넘는 완료·삭제 계획에서 멈춤 | 5번에서 검토 후 적용·보류 |
-| `agent_stopped` | 백그라운드 작업이 로드되지 않음 | 원인을 해결한 뒤 메뉴에서 재시작 |
+| Setup | None | About 10 minutes in the Google Cloud console ([guide](docs/google-cloud-setup.md)) |
+| Available in | Release builds that include it | Every build, including source builds |
+| Consent screen | “Google hasn't verified this app” until the maintainer completes Google's verification | The same warning for your personal, unverified app — expected |
+| User limit | At most 100 new users in total until the app is verified | None for practical purposes — it's your app |
+| Google API quota | One 50,000-requests-per-day quota shared by all users | Your own 50,000 requests per day |
+| Checking Google for changes | At most every 5 minutes (enforced, to protect the shared quota) | Every minute by default (1, 5 or 15 minutes) |
+| Your local edits reach Google | Within seconds (extra syncs at least 30 s apart) | Within seconds |
+| Google's changes reach the Mac | Within about 5 minutes | Within about 1 minute |
+| Shown in your Google Account as | Local Tasks Bridge | The app name you chose |
 
-`account_binding_required` 복구는 Google/Apple 데이터를 지우지 않는다. 먼저
-기존 state를 별도 백업으로 옮기고 `--no-delete-stale` dry-run을 보여 준다.
-사용자가 의도한 계정 조합과 계획을 각각 확인한 뒤에만 같은 안전 옵션으로
-새 state map을 저장하고 LaunchAgent를 다시 시작한다. 인증 자체가 정상인
-경우에는 불필요한 Google 로그인을 반복하지 않는다.
+You can switch later: import your own client in **Settings… → Google** and
+choose **Reconnect Google**.
+The sync map is tied to your Google account, not to the client, so signing in
+to the same account keeps it.
 
-Terminal에서 같은 관리 기능을 직접 열 수도 있다.
+## Daily use
+
+- The menu bar icon shows whether everything is in sync, a sync is running,
+  sync is paused, or something needs your attention. Click it for the time of
+  the last sync and the available actions, including **Open Google Tasks**,
+  **Open Reminders**, **Open Logs** and **Copy Diagnostics**.
+- **Sync Now** starts a cycle immediately. **Pause Sync** stops all syncing,
+  even across restarts, until you choose **Resume Sync**; the menu keeps showing
+  the last sync result meanwhile. If a write such as the first sync is still
+  running, **Quit Local Tasks Bridge** waits for it (“Finishing…”).
+- Changes you make in Reminders on the Mac — or that arrive from your iPhone
+  through iCloud — usually reach Google within seconds: the app notices the
+  change and starts a cycle right away.
+- Changes made in Google arrive with the next scheduled cycle: within about a
+  minute with your own client, within about five minutes with the shared client.
+  Google doesn't notify apps about changes to tasks, so the bridge has to ask.
+- **Widget tip:** add the Reminders widget (Control-click the desktop, or open
+  Notification Center, then choose **Edit Widgets**) and pick a synced list
+  such as **My Tasks** to see your Google tasks right on the desktop.
+- **Siri tip:** in Reminders → **Settings**, set **Default List** to a synced
+  list, so reminders you add with Siri or quick entry end up in Google Tasks
+  too.
+- **Large batches:** when many deletions or completions are held, the app
+  opens **Review Pending Changes** and lists them. **Apply N Changes** carries
+  out exactly that batch. **Keep On Hold** keeps it waiting — the bridge won't
+  ask again for 6 hours — while everything else keeps syncing. **Review
+  Pending Changes…** in the menu reopens it at any time.
+
+## What syncs and what doesn't
+
+Synced in both directions: new items, titles, notes, due dates, completion and
+deletion. Lists are paired by exact name.
+
+Limits that come from Google Tasks or from how the bridge matches items:
+
+- **No time of day in Google Tasks.** Google stores only a date, so a reminder
+  due Tuesday at 15:00 is due “Tuesday” in Google. The time stays on the Mac:
+  editing the task in Google keeps it, and if you move the task to another day
+  in Google, the reminder moves to that day at the same time.
+- **Repeating reminders:** Google gets the current occurrence as a normal task;
+  the repeat rule is not copied and Reminders stays the source of truth.
+  Repeating tasks created in Google arrive on the Mac as one-off reminders.
+- **Subtasks are not mapped.** The parent–child structure is not copied in
+  either direction; a subtask may appear as an ordinary item on the other side.
+- **Reminders-only details** — priority, flags, tags, URLs, locations, images
+  and alerts — stay in Reminders.
+- **Lists are paired by name.** Unselecting a list, or renaming or deleting a
+  list on either side, never deletes items — the bridge just stops syncing
+  them. A list renamed on one side counts as a new list, so you get a fresh
+  copy on the other side; rename it on both sides to keep the pairing
+  ([details](docs/troubleshooting.md#renaming-moving-and-unselecting-lists)).
+- **One Mac only.** Run the bridge on a single Mac per set of accounts; a
+  second Mac syncing the same lists would create duplicates.
+- **A footer in Google task notes.** The bridge recognizes items by a few lines
+  it adds to the notes of each Google task:
+
+  ```text
+  Synced from Apple Reminders.
+  List: My Tasks
+  Source UID: 9f2c41…
+  Source Digest: 7a1e05…
+  ```
+
+  Please don't delete or edit these lines; they link the task to its reminder.
+  They are not copied into Reminders.
+
+More in [docs/troubleshooting.md](docs/troubleshooting.md).
+
+## Safety and privacy
+
+- **Nothing leaves your Mac except the requests to Google** that sync your
+  tasks — and, only when you choose **Check for Updates…**, one request to
+  GitHub. There is no telemetry, no analytics and no server run by the
+  maintainer. Details: [PRIVACY.md](PRIVACY.md).
+- **Every cycle plans before it writes.** The bridge computes the complete set
+  of changes in both directions and fingerprints it. A plan with more than 25
+  deletions or completions, or more than 25 % of the managed items, is never
+  written without your approval. The background sync holds only those
+  deletions and completions and keeps syncing everything else. You are asked
+  only after the same plan shows up on two cycles in a row, so a momentary
+  glitch doesn't put a question on your screen.
+- **New lists start safely.** A list with no entries in the sync map yet — on
+  the first sync, after the map was rebuilt or lost, or when you newly select
+  it — syncs without deletions or completions on that cycle. If the selected
+  lists ever come back completely empty, deletions are skipped for that cycle
+  too.
+- **Your sync map is bound to your accounts.** It is tied to your Apple account
+  and your Google account ID. Signing in again to the same Google account
+  continues where you left off; a different Google or Apple account stops the
+  sync instead of mixing data, until you choose **Pair Accounts Again…**.
+- **Writes are verified.** After writing, the bridge re-reads Google Tasks and
+  checks every synced title and due date.
+- **Private files.** Settings, sign-in and sync map live in
+  `~/.config/local-tasks-bridge/`, readable only by you. Logs in
+  `~/Library/Logs/LocalTasksBridge/` contain task titles — don't post them
+  publicly; `ltb doctor` and **Copy Diagnostics** leave titles out.
+- **You stay in control of access.** Revoke the Google sign-in any time at
+  <https://myaccount.google.com/permissions>, and Reminders access in **System
+  Settings → Privacy & Security → Reminders**.
+
+## Command line
+
+The app contains the `ltb` command at
+`Local Tasks Bridge.app/Contents/Resources/bin/ltb`; the installer links it as
+`~/.local/bin/ltb` (otherwise use **Install Command-Line Tool** in
+**Settings… → Advanced**). If your shell can't find it, add
+`export PATH="$HOME/.local/bin:$PATH"` to `~/.zshrc` and open a new Terminal
+window.
+
+| Command | What it does |
+| --- | --- |
+| `ltb status` | Current state, last sync and the recommended next step (local and instant) |
+| `ltb sync --dry-run` | Show what the next sync would change, without changing anything |
+| `ltb doctor` | Check the installation; add `--online` to also test the Google connection |
+| `ltb manage` | Interactive recovery menu: check Google, reconnect safely, review held changes |
+| `ltb rebuild --dry-run` | After an intended account change: preview rebuilding the sync map; `--yes` rebuilds it (nothing is deleted) |
+| `ltb pause` / `ltb resume` | Pause or resume background sync |
+| `ltb sync-now` | Ask background sync to run a cycle right away |
+| `ltb approvals show` | List held deletions and completions; then `ltb approvals apply <fingerprint>` or `ltb approvals hold <fingerprint>` |
+| `ltb migrate --dry-run` | Preview importing an earlier installation; run without `--dry-run` to import |
+
+Commands that read Reminders, such as `ltb sync`, run under the app that starts
+them; in Terminal, macOS may ask you to give Terminal access to Reminders.
+Every command and option is described in the
+[command-line reference](docs/configuration.md#command-line-reference).
+
+## Upgrading
+
+**Check for Updates…** in the menu tells you whether a newer release exists.
+To install it:
+
+- **Installer:** run the one-line installer again. It quits the running copy,
+  replaces the app and opens the new version.
+- **Zip:** quit the app (menu bar icon → **Quit Local Tasks Bridge**), replace
+  the app in Applications with the new one and open it. The Gatekeeper step is
+  needed again for the new download (or use the installer's `--zip`).
+- **Source:** `git pull && make install`.
+
+Your settings, Google sign-in and sync map live in
+`~/.config/local-tasks-bridge/` and are kept. Because 1.0 builds are ad-hoc
+signed, macOS may treat each update as a new app and ask for Reminders access
+again — click **Allow**. **About Local Tasks Bridge** in the menu and
+`ltb version` show the installed version. Changes are listed in
+[CHANGELOG.md](CHANGELOG.md).
+
+## Uninstalling
+
+In the app, open **Settings… → Advanced** and choose **Uninstall…**. It removes the login
+item and moves the app to the Trash; you can also choose to delete your local
+data and revoke the Google sign-in.
+
+With the installer, which also removes the app and the `ltb` link:
 
 ```bash
-RUNTIME="$HOME/.local/share/icloud-reminders-google-sync/current"
-/opt/homebrew/bin/python3 "$RUNTIME/icloud_reminders_google_sync.py" manage menu
+curl -fsSL https://raw.githubusercontent.com/siyuanj/local-tasks-bridge/main/install.sh | bash -s -- --uninstall
+# add --revoke to revoke the Google sign-in, --delete-data to delete settings, sync map and logs
 ```
 
-기본 `doctor`는 credential을 읽어 Google에 보내거나 token을 갱신하지
-않는다. config·helper·stable runtime·LaunchAgent 설치/로드 여부와 최신
-`status.json`의 상태·시각·연속 실패 횟수만 요약한다. 저장된 원문 오류와
-절대 경로는 출력하지 않고 상태별 다음 조치를 안내한다.
-
-Google 인증 refresh와 Tasks API까지 확인해야 하고 local OAuth token 갱신을
-허용할 때만 `doctor --online`을 명시한다. Google 응답 body는 이 경우에도
-터미널에 출력하지 않는다.
-
-누적 stderr의 오래된 오류만으로 현재 실패라고 판단하지 않는다. 자세한
-원문이 꼭 필요하면 private log와 `status.json`을 Mac 안에서 직접 확인하고,
-credential·token·로컬 경로가 포함될 수 있으므로 채팅이나 issue에 그대로
-붙여넣지 않는다. 현재 상태 판단은 `state`, `last_success_at`,
-`consecutive_failures`와 doctor가 확인한 launchd 상태를 우선한다.
-
-LaunchAgent가 재시작되어도 실패 횟수는 마지막 상태에서 이어지고, 예상하지
-못한 브라우저 OAuth 실행 오류도 루프를 종료하지 않고 `auth_required`로
-기록한다. 자동 OAuth 실패는 timeout, 브라우저 실행 오류, 사용자 거부를
-구분하지 않고 최소 5분부터 실패 횟수에 따라 지수 백오프하며, 설정된
-`auto_reauth_min_interval_seconds`를 상한으로 사용한다. 따라서 60초 scheduler가
-로그인 창을 매 주기 다시 열지 않는다. 사용자가 직접 실행하는 `auth` 명령은
-이 자동 재시도 제한과 분리된다. 다른 수동 동기화가 잠금을 잡고 있으면
-해당 주기는 조용히 건너뛰며, 실제 실행 중인 작업의 `running` 상태를
-덮어쓰지 않는다.
-
-`state.json`은 선택된 Apple Reminders account source와 활성 Google OAuth
-credential에 opaque hash로 바인딩된다. account source나 OAuth credential이
-바뀌면 이전 task/event mapping, conflict state, cursor를 새 계정에 재사용하지
-않고 원격 목록 조회·변경 전에 `account_binding_required`로 중단한다. 기존
-항목이 있는 legacy state에 binding이 없을 때도 자동으로 현재 계정을
-신뢰하지 않는다. 이 경우 동기화를 계속 재시도하지 말고 private state를
-백업한 뒤, 의도한 두 계정을 확인하고 기존 state를 별도로 보존한 상태에서
-`--no-delete-stale`로 새 state를 명시적으로 재구축한다. account identifier와
-refresh token 원문은 state, status, doctor 출력에 저장하지 않는다.
-
-## 수동 동기화
-
-아래 명령은 Apple Reminders 또는 Google Tasks를 변경할 수 있다. 실제
-변경을 원할 때만 실행한다.
+Or with `ltb`, after which you quit the app, move it to the Trash and remove
+`~/.local/bin/ltb` yourself:
 
 ```bash
-RUNTIME="$HOME/.local/share/icloud-reminders-google-sync/current"
-/opt/homebrew/bin/python3 "$RUNTIME/icloud_reminders_google_sync.py" sync --dry-run
-/opt/homebrew/bin/python3 "$RUNTIME/icloud_reminders_google_sync.py" sync
+ltb uninstall --yes                          # remove the login item; keep settings and sync map
+ltb uninstall --revoke --delete-data --yes   # also revoke Google access, delete local data and logs
 ```
 
-모든 동기화는 Apple/Google 쓰기 전에 양방향 mutation plan을 완성하고
-fingerprint를 출력한다. 기본값은 파괴적 완료/삭제/중복 정리가 25건을
-초과하거나 현재 관리 항목의 25%를 초과하면 쓰기 전에 중단하는 것이다.
-`max_destructive_changes`, `max_destructive_ratio`,
-`destructive_approval_ttl_seconds`로 기준을 조정할 수 있다.
-`auto_approve_destructive_loops`의 기본값과 설치값은 `0`이다. 같은 대량
-삭제 계획이 계속 반복돼도 자동으로 승인하지 않는다.
-기존 config에 양수가 지정되어 있다면 `0`으로 바꾸면 자동 승인을 끌 수 있다.
+Uninstalling never deletes reminders or Google tasks; the footer lines stay in
+the notes of synced Google tasks. A complete manual reset is described in
+[Troubleshooting](docs/troubleshooting.md#complete-reset).
 
-### 대량 변경 확인
+## Documentation
 
-백그라운드 동기화는 한도를 넘는 계획을 만나도 전체 동기화를 멈추지 않는다.
+- [Create your own Google Cloud client](docs/google-cloud-setup.md)
+- [Configuration and command-line reference](docs/configuration.md)
+- [Troubleshooting and FAQ](docs/troubleshooting.md)
+- [Architecture](docs/architecture.md)
+- [Migrating from an earlier installation](docs/migration.md)
+- [Releasing (maintainers)](docs/releasing.md) · [Roadmap](docs/roadmap.md) ·
+  [Changelog](CHANGELOG.md)
+- [Privacy](PRIVACY.md) · [Security policy](SECURITY.md)
 
-1. 그 주기부터 삭제·완료만 보류하고 생성·수정 등 나머지 변경은
-   `--no-delete-stale`과 같은 방식으로 계속 동기화한다. 상태는
-   `awaiting_mutation_approval`이다.
-2. 같은 삭제·완료 묶음이 두 주기 연속 나오면(일시적인 부분 export로 질문하지
-   않도록) 로그인한 사용자 화면에 확인 창을 한 번 띄운다. 창에는 종류별
-   건수, 목록별 건수, 예시 제목이 나오고 기본 버튼은 `보류`다.
-3. `적용`을 누르면 다음 주기에 방금 본 삭제·완료 묶음만 적용한다. 그 사이
-   다른 항목이 더 지워지는 등 묶음이 바뀌면 적용하지 않고 새 계획으로 다시
-   묻는다. 새 미리 알림처럼 삭제와 무관한 변경은 승인을 무효로 만들지 않는다.
-4. `보류`를 누르면 `mutation_approval_prompt_repeat_seconds`(기본 6시간)
-   동안 다시 묻지 않고, 그동안에도 나머지는 계속 동기화한다. 답하지 않은
-   창은 열린 채로 기다리며, 계획이 사라지면(항목 복구 등) 창을 닫는다.
+Common questions:
+[Does the maintainer see my tasks?](docs/troubleshooting.md#does-the-maintainer-see-my-tasks) ·
+[Why does Google say the app isn't verified?](docs/troubleshooting.md#google-hasnt-verified-this-app) ·
+[Can I use it on two Macs?](docs/troubleshooting.md#can-i-run-it-on-two-macs) ·
+[Something says “approval required”](docs/troubleshooting.md#bulk-changes-waiting-for-approval) ·
+[“Account binding required”](docs/troubleshooting.md#account-binding-required)
 
-확인 창을 띄울 수 없거나 `mutation_approval_prompt`가 `false`이면 같은
-간격으로 알림 하나만 보낸다. 이때와 수동 `sync`가 막힌 경우에는 관리
-메뉴의 `대량 변경 검토 후 적용`에서 Terminal로 전체 목록을 확인하고 적용하거나
-보류할 수 있다. 창의 제목 목록은 argv가 아닌 자식 프로세스 환경 변수로
-전달되며, `status.json`에는 답, 삭제·완료 묶음의 hash, 시각만 남는다.
+## Contributing
 
-Terminal에서 token으로 직접 승인하는 기존 방법도 그대로 쓸 수 있다.
-먼저 dry-run에서 fingerprint와 짧게 유효한 승인 token을 확인한 뒤, 같은
-plan에만 적용되는 token을 명시적으로 전달한다.
+Bug reports and focused pull requests are welcome. Please read
+[CONTRIBUTING.md](CONTRIBUTING.md) — every sync behavior change needs a
+regression test, safety guards are never weakened, and every user-facing
+message is written in English and Chinese. Report security problems privately as
+described in [SECURITY.md](SECURITY.md). Participation follows the
+[Code of Conduct](CODE_OF_CONDUCT.md).
 
-```bash
-/opt/homebrew/bin/python3 "$RUNTIME/icloud_reminders_google_sync.py" sync --dry-run
-/opt/homebrew/bin/python3 "$RUNTIME/icloud_reminders_google_sync.py" sync \
-  --approve-mutation-plan '<fingerprint>:<issued-unix-time>'
-```
+## License and attribution
 
-plan이 달라졌거나 token이 만료되면 다시 차단된다. `status.json`에는 원문
-할 일 제목이나 ID 대신 fingerprint, 종류별 개수, 비율, 차단 코드만 기록한다.
+Local Tasks Bridge is released under the [MIT License](LICENSE) and maintained
+by Siyuan Jiang ([@siyuanj](https://github.com/siyuanj)). It is a fork of
+[syncweave-labs/reminders-task-bridge](https://github.com/syncweave-labs/reminders-task-bridge)
+(MIT, © 2026 Syncweave Labs contributors), whose history and license notice are
+preserved.
 
-새 상태 맵을 만들 때는 삭제/완료 전파를 막는다.
-
-```bash
-RUNTIME="$HOME/.local/share/icloud-reminders-google-sync/current"
-/opt/homebrew/bin/python3 "$RUNTIME/icloud_reminders_google_sync.py" sync --dry-run --no-delete-stale
-/opt/homebrew/bin/python3 "$RUNTIME/icloud_reminders_google_sync.py" sync --no-delete-stale
-```
-
-`--no-delete-stale`에서는 양방향 삭제와 중복 삭제도 실행하지 않으므로 새
-Mac의 상태 맵을 먼저 안전하게 재구축할 수 있다.
-
-## 자동 실행과 롤백
-
-LaunchAgent를 내리거나 다시 올리는 명령은 사용자 세션의 live operation이다.
-
-```bash
-launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.icloud-reminders-google-sync.plist
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.icloud-reminders-google-sync.plist
-```
-
-새 릴리스에 문제가 있으면 `releases/`에서 이전 검증 commit을 고른 뒤
-`current`를 되돌리고 LaunchAgent를 재시작한다.
-
-```bash
-ls -1 ~/.local/share/icloud-reminders-google-sync/releases
-ln -sfn "releases/<previous-full-commit-sha>" \
-  ~/.local/share/icloud-reminders-google-sync/current
-launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.icloud-reminders-google-sync.plist
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.icloud-reminders-google-sync.plist
-```
-
-롤백 후 `launchctl print`, `doctor`, 최신 `status.json`으로 복구를 확인한다.
-
-## 제한과 문제 해결
-
-- Google Tasks API는 날짜 `due`를 지원하지만 시간과 반복 규칙을 그대로
-  저장하지 않는다. 반복 규칙의 원본은 Apple Reminders다.
-- Google refresh token이 만료되거나 철회되면 사용자 계정 선택, 2FA,
-  OAuth 승인이 다시 필요할 수 있다.
-- `credentials.json`은 source control에 넣지 않는다. 설치할 때만 소스
-  옆에 임시로 두거나
-  `~/.config/icloud-reminders-google-sync/credentials.json`에 둔다.
-- Reminders 접근 오류는 stable runtime helper로 확인한다.
-
-```bash
-swift ~/.local/share/icloud-reminders-google-sync/current/RemindersExport.swift --lists-only
-```
-
-- 목록이 0개라면 Reminders 앱에서 iCloud 목록이 내려왔는지와
-  `System Settings → Privacy & Security → Reminders` 권한을 먼저 확인한다.
-- `Google Tasks title/due consistency check failed`는 최근 task 단건 조회와
-  설정된 재시도 후에도 제목/날짜가 다를 때만 최종 오류로 남는다.
+Local Tasks Bridge is an independent project, not affiliated with or endorsed
+by Apple or Google. Apple, macOS, iCloud, Reminders and Siri are trademarks of
+Apple Inc. Google, Google Tasks, Gmail, Google Calendar and Gemini are
+trademarks of Google LLC.

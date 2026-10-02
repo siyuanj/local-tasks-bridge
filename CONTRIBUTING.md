@@ -81,6 +81,7 @@ config folder and a test list — or better, the end-to-end harness.
 | `tests/e2e/` | The end-to-end harness: fake Google server and fake Reminders helpers |
 | `scripts/` | Build, packaging, Python download, installer tests and the release source gate |
 | `site/` | The website: home page and privacy policy in English and Chinese, plain HTML published to GitHub Pages |
+| `promo/` | The promo video, made with Remotion; each feature is one scene (see `promo/README.md`) |
 | `install.sh` | The installer and uninstaller |
 | `docs/` | Documentation in English and Chinese; [app-engine-contract.md](docs/app-engine-contract.md) is the interface between app and engine |
 

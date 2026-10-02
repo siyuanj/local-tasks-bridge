@@ -86,7 +86,8 @@ fails without the change.
 | `install.sh` | Installer, updater and uninstaller |
 | `docs/` | Documentation, in English and Chinese pairs (`x.md`, `x.zh-CN.md`) |
 | `site/` | Static website (home page and privacy policy, English / Chinese), published by `.github/workflows/pages.yml` |
-| `.github/` | CI, release and website workflows, issue and pull request templates |
+| `promo/` | Promo video (Remotion, English / Chinese): one scene per feature; see `promo/README.md` |
+| `.github/` | CI, release, website and promo workflows, issue and pull request templates |
 
 ## Required checks
 

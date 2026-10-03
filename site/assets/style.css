@@ -45,6 +45,9 @@ nav.links { display: flex; gap: 18px; font-size: 15px; flex-wrap: wrap; }
 .hero img { width: 148px; height: 148px; flex: none; }
 .hero h1 { font-size: 40px; line-height: 1.15; margin: 0 0 12px; letter-spacing: -0.02em; }
 .hero p.lead { font-size: 19px; color: var(--muted); margin: 0 0 22px; }
+.promo { margin: 8px 0 40px; }
+.promo video { display: block; width: 100%; aspect-ratio: 16 / 9; border-radius: 14px; border: 1px solid var(--border); background: #000; }
+.promo figcaption { margin-top: 10px; font-size: 15px; color: var(--muted); text-align: center; }
 .buttons { display: flex; gap: 12px; flex-wrap: wrap; }
 .button {
   display: inline-block; padding: 10px 18px; border-radius: 10px; font-weight: 600;
